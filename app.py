@@ -10,11 +10,157 @@ from datetime import datetime, timedelta
 # إعدادات الصفحة الأساسية
 st.set_page_config(page_title="محلل السوينق والموجات الاحترافي", layout="wide", initial_sidebar_state="expanded")
 
-st.title("📈 لوحة تحليل السوينق والأهداف الزمنية (SPY / QQQ)")
-st.markdown("أداة احترافية لتحديد هيكل السوق، الموجات السعرية، وتقدير مناطق الاحتمالات السعرية والزمنية لعقود الخيارات.")
+# --- حزمة التصميم البصري: الخيار الثالث (متوازن ونظيف Balanced & Clean) + دعم RTL وخط Cairo ---
+st.markdown("""
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Cairo:wght@400;600;700;800&display=swap');
+
+html, body, [class*="css"], .stMarkdown, .stText, p, h1, h2, h3, h4, label, button {
+    font-family: 'Cairo', sans-serif !important;
+}
+
+/* الخلفية الرئيسية المتوازنة والنظيفة */
+.stApp {
+    background-color: #131722;
+    color: #E2E8F0;
+}
+
+/* القائمة الجانبية */
+[data-testid="stSidebar"] {
+    background-color: #1A1F2E;
+    border-left: 1px solid #2A3142;
+}
+
+/* محاذاة النصوص العربية لليمين مع الحفاظ على اتجاه الأرقام والشارت */
+.rtl-box {
+    direction: rtl;
+    text-align: right;
+}
+
+/* تصميم البطاقات الزجاجية النظيفة للمؤشرات */
+[data-testid="stMetric"] {
+    background: linear-gradient(145deg, #1C2230, #161B26);
+    border: 1px solid #2D3548;
+    border-radius: 12px;
+    padding: 16px 20px;
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.25);
+    transition: transform 0.2s ease, border-color 0.2s ease;
+    direction: rtl;
+    text-align: right;
+}
+
+[data-testid="stMetric"]:hover {
+    border-color: #4A90E2;
+    transform: translateY(-2px);
+}
+
+[data-testid="stMetricLabel"] {
+    color: #94A3B8 !important;
+    font-size: 0.95rem !important;
+    font-weight: 600 !important;
+    justify-content: flex-end;
+}
+
+[data-testid="stMetricValue"] {
+    color: #F8FAFC !important;
+    font-size: 1.65rem !important;
+    font-weight: 800 !important;
+    direction: ltr;
+    text-align: right;
+}
+
+/* شريط الحالة الحي العلوي */
+.live-banner {
+    background: linear-gradient(90deg, #1E2536 0%, #252E42 100%);
+    border: 1px solid #334155;
+    border-right: 5px solid #38BDF8;
+    border-radius: 10px;
+    padding: 14px 20px;
+    margin-bottom: 20px;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    flex-wrap: wrap;
+    direction: rtl;
+    box-shadow: 0 4px 10px rgba(0,0,0,0.2);
+}
+
+.banner-item {
+    font-size: 0.98rem;
+    font-weight: 600;
+    color: #E2E8F0;
+    margin: 4px 10px;
+}
+
+.badge-bull {
+    background-color: rgba(16, 185, 129, 0.18);
+    color: #34D399;
+    border: 1px solid #10B981;
+    padding: 4px 12px;
+    border-radius: 20px;
+    font-weight: 700;
+}
+
+.badge-bear {
+    background-color: rgba(239, 68, 68, 0.18);
+    color: #F87171;
+    border: 1px solid #EF4444;
+    padding: 4px 12px;
+    border-radius: 20px;
+    font-weight: 700;
+}
+
+/* تحسين التبويبات */
+.stTabs [data-baseweb="tab-list"] {
+    gap: 10px;
+    background-color: #1A1F2E;
+    padding: 6px;
+    border-radius: 10px;
+    border: 1px solid #2A3142;
+    direction: rtl;
+}
+
+.stTabs [data-baseweb="tab"] {
+    border-radius: 8px;
+    padding: 8px 18px;
+    color: #94A3B8;
+    font-weight: 700;
+}
+
+.stTabs [aria-selected="true"] {
+    background-color: #2A344A !important;
+    color: #38BDF8 !important;
+}
+
+/* تحسين الجداول */
+[data-testid="stDataFrame"] {
+    border: 1px solid #2D3548;
+    border-radius: 10px;
+    overflow: hidden;
+}
+
+/* صندوق المنهجية القابل للطي */
+.streamlit-expanderHeader {
+    background-color: #1A1F2E !important;
+    border: 1px solid #2D3548 !important;
+    border-radius: 10px !important;
+    color: #E2E8F0 !important;
+    font-weight: 700 !important;
+    direction: rtl;
+}
+</style>
+""", unsafe_allow_html=True)
+
+# --- ترويسة الصفحة ---
+st.markdown("""
+<div class="rtl-box">
+    <h1 style="margin-bottom: 4px; color: #F8FAFC; font-weight: 800;">📈 لوحة تحليل السوينق والأهداف الزمنية (SPY / QQQ)</h1>
+    <p style="color: #94A3B8; font-size: 1.05rem; margin-bottom: 18px;">منصة تحليلية لتحديد هيكل السوق، الموجات السعرية، وتقدير مناطق الاحتمالات السعرية والزمنية لعقود الخيارات.</p>
+</div>
+""", unsafe_allow_html=True)
 
 # --- القائمة الجانبية (المدخلات والتحكم الحي) ---
-st.sidebar.header("⚙️ إعدادات التحليل")
+st.sidebar.markdown('<div class="rtl-box"><h3>⚙️ إعدادات التحليل والتحكم</h3></div>', unsafe_allow_html=True)
 ticker = st.sidebar.selectbox("اختر المؤشر / السهم:", ["SPY", "QQQ", "IWM", "NVDA", "AAPL", "TSLA", "MSFT", "AMZN", "META"])
 interval = st.sidebar.selectbox("الإطار الزمني (Timeframe):", ["1d", "1h"], index=0)
 period = "1y" if interval == "1d" else "3mo"
@@ -28,7 +174,7 @@ def add_trading_days(start_date, trading_days):
     added = 0
     while added < trading_days:
         current_date += timedelta(days=1)
-        if current_date.weekday() < 5:  # 0-4 الإثنين إلى الجمعة
+        if current_date.weekday() < 5:
             added += 1
     return current_date
 
@@ -43,18 +189,15 @@ def analyze_ticker(symbol, period, interval, swing_order):
     if df.empty or len(df) < 50:
         return None
     
-    # المتوسطات المتحركة وفلتر الاتجاه
     df['EMA20'] = df['Close'].ewm(span=20, adjust=False).mean()
     df['EMA50'] = df['Close'].ewm(span=50, adjust=False).mean()
     
-    # مؤشر القوة النسبية RSI
     delta = df['Close'].diff()
     gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
     loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
     rs = gain / loss
     df['RSI'] = 100 - (100 / (1 + rs))
     
-    # متوسط المدى الحقيقي ATR
     high_low = df['High'] - df['Low']
     high_close = np.abs(df['High'] - df['Close'].shift())
     low_close = np.abs(df['Low'] - df['Close'].shift())
@@ -62,7 +205,6 @@ def analyze_ticker(symbol, period, interval, swing_order):
     true_range = np.max(ranges, axis=1)
     df['ATR'] = true_range.rolling(14).mean()
     
-    # اكتشاف القمم والقيعان المحورية آلياً
     df['Swing_High'] = df.iloc[argrelextrema(df['High'].values, np.greater_equal, order=swing_order)[0]]['High']
     df['Swing_Low'] = df.iloc[argrelextrema(df['Low'].values, np.less_equal, order=swing_order)[0]]['Low']
     
@@ -96,12 +238,12 @@ def analyze_ticker(symbol, period, interval, swing_order):
             target_1 = recent_low_price + (wave_height * 1.272)
             target_2 = recent_low_price + (wave_height * 1.618)
             stop_loss = recent_low_price - (current_atr * 0.5)
-            strike_rec = round(current_price)  # ATM Call
+            strike_rec = round(current_price)
         else:
             target_1 = recent_high_price - (wave_height * 1.272)
             target_2 = recent_high_price - (wave_height * 1.618)
             stop_loss = recent_high_price + (current_atr * 0.5)
-            strike_rec = round(current_price)  # ATM Put
+            strike_rec = round(current_price)
             
         est_bars_t1 = int(wave_bars * 1.0)
         est_bars_t2 = int(wave_bars * 1.618)
@@ -145,7 +287,7 @@ def analyze_ticker(symbol, period, interval, swing_order):
         "rr_ratio": rr_ratio
     }
 
-# إنشاء تبويبين رئيسيين: التحليل التفصيلي + الماسح الآلي للفرص
+# إنشاء تبويبين رئيسيين
 tab1, tab2 = st.tabs(["📊 التحليل التفصيلي وبطاقة الصفقة", "🔍 الماسح الآلي للأسهم والمؤشرات (Screener)"])
 
 with tab1:
@@ -155,6 +297,17 @@ with tab1:
         st.error("تعذر جلب البيانات الكافية لهذا المؤشر حالياً.")
     else:
         df = res["df"]
+        badge_class = "badge-bull" if res["is_bullish"] else "badge-bear"
+        
+        # --- شريط الحالة الحي العلوي (Live Status Banner) ---
+        st.markdown(f"""
+        <div class="live-banner">
+            <div class="banner-item">📌 الأصل المفحوص: <strong style="color:#38BDF8; font-size:1.1rem;">{ticker}</strong> ({interval})</div>
+            <div class="banner-item">🧭 الاتجاه العام: <span class="{badge_class}">{res['trend']}</span></div>
+            <div class="banner-item">⚡ مؤشر الزخم RSI: <strong>{res['current_rsi']:.1f}</strong></div>
+            <div class="banner-item">⚖️ العائد للمخاطرة: <strong style="color:#FBBF24;">1 : {res['rr_ratio']:.2f}</strong></div>
+        </div>
+        """, unsafe_allow_html=True)
         
         # --- عرض بطاقات الملخص العلوي ---
         col1, col2, col3, col4 = st.columns(4)
@@ -164,7 +317,7 @@ with tab1:
         col4.metric("نوع العقد المقترح", res["option_type"], f"Strike: ${res['strike_rec']} | DTE: {res['recommended_dte']} يوم")
 
         # --- بطاقة التوصية التنفيذية التفصيلية ---
-        st.subheader(f"🎯 بطاقة السيناريو التنفيذي وعقد الأوبشن المقترح ({ticker})")
+        st.markdown(f'<div class="rtl-box"><h3 style="margin-top:20px;">🎯 بطاقة السيناريو التنفيذي وعقد الأوبشن المقترح ({ticker})</h3></div>', unsafe_allow_html=True)
         setup_df = pd.DataFrame([{
             "الأصل": ticker,
             "الاتجاه العام": res["trend"],
@@ -179,31 +332,46 @@ with tab1:
             "انتهاء الصلاحية المقترح": f"{res['expiry_date']} ({res['recommended_dte']} يوم)"
         }])
         st.dataframe(setup_df, use_container_width=True, hide_index=True)
-        st.caption("⚠️ **تنويه احترافي:** مستويات امتداد فيبوناتشي (1.272 و 1.618) والتواريخ التقديرية هي **أهداف حسابية ومناطق احتمالات مبنية على سلوك الموجات السابقة وليست توقعات مضمونة**. الالتزام بوقف الخسارة وإدارة رأس المال هو أساس البقاء في السوق.")
+        st.markdown('<div class="rtl-box"><p style="color:#94A3B8; font-size:0.88rem;">⚠️ <strong>تنويه احترافي:</strong> مستويات امتداد فيبوناتشي (1.272 و 1.618) والتواريخ التقديرية هي <strong>أهداف حسابية ومناطق احتمالات مبنية على سلوك الموجات السابقة وليست توقعات مضمونة</strong>. الالتزام بوقف الخسارة وإدارة رأس المال هو أساس البقاء في السوق.</p></div>', unsafe_allow_html=True)
 
-        # --- الرسم البياني التفاعلي (Plotly) ---
+        # --- الرسم البياني التفاعلي المتناسق مع خلفية التصميم المتوازن ---
         fig = make_subplots(rows=2, cols=1, shared_xaxes=True, vertical_spacing=0.05, row_heights=[0.75, 0.25])
 
-        fig.add_trace(go.Candlestick(x=df.index, open=df['Open'], high=df['High'], low=df['Low'], close=df['Close'], name="السعر"), row=1, col=1)
-        fig.add_trace(go.Scatter(x=df.index, y=df['EMA20'], line=dict(color='cyan', width=1.2), name="EMA 20"), row=1, col=1)
-        fig.add_trace(go.Scatter(x=df.index, y=df['EMA50'], line=dict(color='orange', width=1.5), name="EMA 50 (فلتر الاتجاه)"), row=1, col=1)
+        fig.add_trace(go.Candlestick(
+            x=df.index, open=df['Open'], high=df['High'], low=df['Low'], close=df['Close'],
+            name="السعر", increasing_line_color='#10B981', decreasing_line_color='#EF4444'
+        ), row=1, col=1)
+        fig.add_trace(go.Scatter(x=df.index, y=df['EMA20'], line=dict(color='#38BDF8', width=1.4), name="EMA 20"), row=1, col=1)
+        fig.add_trace(go.Scatter(x=df.index, y=df['EMA50'], line=dict(color='#F59E0B', width=1.8), name="EMA 50 (فلتر الاتجاه)"), row=1, col=1)
 
-        fig.add_trace(go.Scatter(x=df.index, y=df['Swing_High'], mode='markers', marker=dict(color='red', size=8, symbol='triangle-down'), name="قمة موجة (Pivot High)"), row=1, col=1)
-        fig.add_trace(go.Scatter(x=df.index, y=df['Swing_Low'], mode='markers', marker=dict(color='lime', size=8, symbol='triangle-up'), name="قاع موجة (Pivot Low)"), row=1, col=1)
+        fig.add_trace(go.Scatter(x=df.index, y=df['Swing_High'], mode='markers', marker=dict(color='#EF4444', size=9, symbol='triangle-down'), name="قمة موجة (Pivot High)"), row=1, col=1)
+        fig.add_trace(go.Scatter(x=df.index, y=df['Swing_Low'], mode='markers', marker=dict(color='#10B981', size=9, symbol='triangle-up'), name="قاع موجة (Pivot Low)"), row=1, col=1)
 
-        fig.add_hline(y=res['target_1'], line_dash="dash", line_color="green", annotation_text=f"احتمال T1 (1.272): ${res['target_1']:.2f} | {res['date_t1']}", row=1, col=1)
-        fig.add_hline(y=res['target_2'], line_dash="dot", line_color="lime", annotation_text=f"احتمال T2 (1.618): ${res['target_2']:.2f} | {res['date_t2']}", row=1, col=1)
-        fig.add_hline(y=res['stop_loss'], line_dash="dash", line_color="red", annotation_text=f"وقف الخسارة (ATR): ${res['stop_loss']:.2f}", row=1, col=1)
+        fig.add_hline(y=res['target_1'], line_dash="dash", line_color="#10B981", annotation_text=f"احتمال T1 (1.272): ${res['target_1']:.2f} | {res['date_t1']}", row=1, col=1)
+        fig.add_hline(y=res['target_2'], line_dash="dot", line_color="#34D399", annotation_text=f"احتمال T2 (1.618): ${res['target_2']:.2f} | {res['date_t2']}", row=1, col=1)
+        fig.add_hline(y=res['stop_loss'], line_dash="dash", line_color="#EF4444", annotation_text=f"وقف الخسارة (ATR): ${res['stop_loss']:.2f}", row=1, col=1)
 
-        fig.add_trace(go.Scatter(x=df.index, y=df['RSI'], line=dict(color='purple', width=1.5), name="RSI (14)"), row=2, col=1)
-        fig.add_hline(y=70, line_dash="dot", line_color="gray", row=2, col=1)
-        fig.add_hline(y=30, line_dash="dot", line_color="gray", row=2, col=1)
+        fig.add_trace(go.Scatter(x=df.index, y=df['RSI'], line=dict(color='#A78BFA', width=1.6), name="RSI (14)"), row=2, col=1)
+        fig.add_hline(y=70, line_dash="dot", line_color="#64748B", row=2, col=1)
+        fig.add_hline(y=30, line_dash="dot", line_color="#64748B", row=2, col=1)
 
-        fig.update_layout(height=650, xaxis_rangeslider_visible=False, template="plotly_dark", title_text=f"التحليل الهيكلي والموجي لـ {ticker}")
+        fig.update_layout(
+            height=650,
+            xaxis_rangeslider_visible=False,
+            paper_bgcolor="#131722",
+            plot_bgcolor="#1A1F2E",
+            font=dict(family="Cairo, sans-serif", color="#E2E8F0"),
+            title=dict(text=f"التحليل الهيكلي والموجي لـ {ticker}", x=0.98, xanchor="right"),
+            xaxis=dict(gridcolor="#2A3142"),
+            yaxis=dict(gridcolor="#2A3142"),
+            xaxis2=dict(gridcolor="#2A3142"),
+            yaxis2=dict(gridcolor="#2A3142"),
+            legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="left", x=0)
+        )
         st.plotly_chart(fig, use_container_width=True)
 
         # --- قسم إدارة المخاطر وحاسبة الصفقة ---
-        st.subheader("🛡️ حاسبة إدارة المخاطر وحجم الصفقة (Position Sizing)")
+        st.markdown('<div class="rtl-box"><h3>🛡️ حاسبة إدارة المخاطر وحجم الصفقة (Position Sizing)</h3></div>', unsafe_allow_html=True)
         risk_amount = portfolio_size * (risk_pct / 100)
         risk_per_share = abs(res['current_price'] - res['stop_loss'])
         shares_allowed = int(risk_amount / risk_per_share) if risk_per_share > 0 else 0
@@ -216,8 +384,12 @@ with tab1:
         c4.metric("نسبة العائد للمخاطرة (R:R)", f"1 : {rr_ratio:.2f}", "مقبول (> 1:2)" if rr_ratio >= 2 else "ضعيف (< 1:2)")
 
 with tab2:
-    st.subheader("🔍 الماسح الآلي للفرص السوينقية (Multi-Ticker Screener)")
-    st.markdown("يفحص الماسح قائمة من أبرز المؤشرات والأسهم القيادية لحظياً لتحديد نوع العقد المناسب (Call / Put) والأهداف السعرية والزمنية المحتملة.")
+    st.markdown("""
+    <div class="rtl-box">
+        <h3>🔍 الماسح الآلي للفرص السوينقية (Multi-Ticker Screener)</h3>
+        <p style="color:#94A3B8;">يفحص الماسح قائمة من أبرز المؤشرات والأسهم القيادية لحظياً لتحديد نوع العقد المناسب (Call / Put) والأهداف السعرية والزمنية المحتملة.</p>
+    </div>
+    """, unsafe_allow_html=True)
     
     watchlist = st.multiselect(
         "اختر قائمة الأسهم والمؤشرات للفحص:",
@@ -252,14 +424,25 @@ with tab2:
             
         if screener_rows:
             screener_df = pd.DataFrame(screener_rows)
-            st.dataframe(screener_df, use_container_width=True, hide_index=True)
-            st.caption("⚠️ تذكير: الأهداف السعرية والتواريخ الموضحة في الجدول تمثل مناطق احتمالية رياضية بناءً على امتدادات فيبوناتشي وسرعة الموجات السابقة، وليست ضماناً لحركة السعر.")
+            
+            # تلوين صفوف الجدول حسب نوع العقد (CALL أخضر / PUT أحمر)
+            def highlight_contract(row):
+                if "CALL" in str(row["نوع العقد"]):
+                    return ['background-color: rgba(16, 185, 129, 0.12)'] * len(row)
+                elif "PUT" in str(row["نوع العقد"]):
+                    return ['background-color: rgba(239, 68, 68, 0.12)'] * len(row)
+                return [''] * len(row)
+
+            styled_df = screener_df.style.apply(highlight_contract, axis=1)
+            st.dataframe(styled_df, use_container_width=True, hide_index=True)
+            st.markdown('<div class="rtl-box"><p style="color:#94A3B8; font-size:0.88rem;">⚠️ تذكير: الأهداف السعرية والتواريخ الموضحة في الجدول تمثل مناطق احتمالية رياضية بناءً على امتدادات فيبوناتشي وسرعة الموجات السابقة، وليست ضماناً لحركة السعر.</p></div>', unsafe_allow_html=True)
         else:
             st.warning("لم يتم العثور على بيانات كافية للقائمة المحددة.")
 
 # --- قسم التوثيق ومنهجية عمل الأداة ---
 with st.expander("📖 منهجية التحليل والمعايير الفنية المعتمدة في الأداة (8 ركائز أساسية)"):
     st.markdown("""
+    <div class="rtl-box">
     تعتمد هذه الأداة على منظومة متكاملة من التحليل الفني، حساب هيكل السوق (Market Structure)، ودمج نسب فيبوناتشي لفحص وتحديد مستويات صفقات السوينق:
 
     ### 1. جلب البيانات والتحقّق الفوري (Live Data & Fetching)
@@ -289,5 +472,6 @@ with st.expander("📖 منهجية التحليل والمعايير الفني
     * دمج مؤشر القوة النسبية `RSI (14)` لقياس تشبع السعر وقوة الزخم.
 
     ### 8. العرض البصري والماسح الآلي (Plotly & Multi-Ticker Screener)
-    * شارت تفاعلي مع بطاقة تنفيذية تحدد نوع العقد (`CALL` أو `PUT`) وسعر التنفيذ (`Strike`)، بالإضافة إلى ماسح آلي يفحص عدة أسهم ومؤشرات دفعة واحدة.
-    """)
+    * شارت تفاعلي بهوية بصرية متوازنة ونظيفة مع بطاقة تنفيذية تحدد نوع العقد (`CALL` أو `PUT`) وسعر التنفيذ (`Strike`)، بالإضافة إلى ماسح آلي يفحص عدة أسهم ومؤشرات دفعة واحدة.
+    </div>
+    """, unsafe_allow_html=True)
