@@ -1,7 +1,7 @@
 """
 ================================================================================
 اسم الأداة: محلل السوينق والموجات الاحترافي مع مؤشرات MACD والبولنجر (Swing & Wave Analyzer)
-الإصدار: v2.2.2
+الإصدار: v2.2.3
 تاريخ التحديث: 2026-11-14
 ================================================================================
 """
@@ -18,9 +18,9 @@ from datetime import datetime, timedelta
 import os
 
 # إعدادات الصفحة الأساسية
-st.set_page_config(page_title="محلل السوينق والموجات الاحترافي v2.2", layout="wide", initial_sidebar_state="expanded")
+st.set_page_config(page_title="محلل السوينق والموجات الاحترافي v2.2.3", layout="wide", initial_sidebar_state="expanded")
 
-# --- حزمة التصميم البصري: الخيار الثالث (متوازن ونظيف Balanced & Clean) + دعم RTL وخط Cairo ---
+# --- حزمة التصميم البصري ---
 st.markdown("""
 <style>
 @import url('https://fonts.googleapis.com/css2?family=Cairo:wght@400;600;700;800&display=swap');
@@ -73,4 +73,12 @@ html, body, [class*="css"], .stMarkdown, .stText, p, h1, h2, h3, h4, label, butt
     background: linear-gradient(90deg, #1E2536 0%, #252E42 100%);
     border: 1px solid #334155;
     border-right: 5px solid #38BDF8;
-    border-radius:
+    border-radius: 10px;
+    padding: 14px 20px;
+    margin-bottom: 20px;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    flex-wrap: wrap;
+    direction: rtl;
+    box-shadow: 0 4px
