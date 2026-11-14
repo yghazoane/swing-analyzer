@@ -1,7 +1,7 @@
 """
 ================================================================================
-اسم الأداة: محلل السوينق والمضاربة اليومية للعقود (Pro Options & Swing Analyzer)
-الإصدار: v2.3.0 (النسخة الاحترافية المدققة)
+اسم الأداة: محلل العقود والسوينق الاحترافي (Pro Options & Swing Analyzer)
+الإصدار: v2.3.1
 الوصف: تحليل هيكلي للأسهم والمؤشرات، تحديد الأهداف بفيبوناتشي و ATR، تسعير العقود
        وحساب اليونانيات (Black-Scholes + سحب السلسلة الحية)، وإدارة حجم العقود.
 ================================================================================
@@ -20,7 +20,7 @@ import os
 
 # إعدادات الصفحة
 st.set_page_config(
-    page_title="محلل العقود والسوينق الاحترافي v2.3.0",
+    page_title="محلل العقود والسوينق الاحترافي v2.3.1",
     layout="wide",
     initial_sidebar_state="expanded"
 )
@@ -116,7 +116,7 @@ def calculate_bs_metrics(S, K, T_days, r, sigma, is_call=True):
                         + r * K * np.exp(-r * T) * norm.cdf(-d2))
 
     gamma = norm.pdf(d1) / (S * sigma * sqrt_T)
-    vega = (S * norm.pdf(d1) * sqrt_T) / 100.0  # لكل 1% تغير في IV
+    vega = (S * norm.pdf(d1) * sqrt_T) / 100.0
     theta_daily = theta_annual / 365.0
 
     return {
@@ -129,8 +129,27 @@ def calculate_bs_metrics(S, K, T_days, r, sigma, is_call=True):
     }
 
 
+@st.cache_data(ttl=600)
+def fetch_price_history(symbol, period, interval):
+    """جلب البيانات التاريخية مع آلية احتياطية لتجنب حظر أو فشل الاتصال"""
+    try:
+        tk = yf.Ticker(symbol)
+        df = tk.history(period=period, interval=interval, auto_adjust=False)
+        if df is None or df.empty:
+            df = yf.download(symbol, period=period, interval=interval, progress=False)
+        if isinstance(df.columns, pd.MultiIndex):
+            df.columns = df.columns.get_level_values(0)
+        if df is not None and not df.empty:
+            cols = [c for c in ['Open', 'High', 'Low', 'Close', 'Volume'] if c in df.columns]
+            df = df[cols].dropna()
+        return df, ""
+    except Exception as e:
+        return pd.DataFrame(), str(e)
+
+
+@st.cache_data(ttl=600)
 def fetch_live_option_hint(symbol, target_dte, is_call, target_strike):
-    """محاولة جلب أقرب عقد حقيقي من سلسلة الأوبشن الحية كمرجع إضافي"""
+    """جلب أقرب عقد حقيقي من سلسلة الأوبشن الحية كمرجع إضافي"""
     try:
         tk = yf.Ticker(symbol)
         expirations = tk.options
@@ -143,7 +162,7 @@ def fetch_live_option_hint(symbol, target_dte, is_call, target_strike):
         )
         chain = tk.option_chain(best_exp)
         df_opt = chain.calls if is_call else chain.puts
-        if df_opt.empty:
+        if df_opt is None or df_opt.empty:
             return None
         idx = (df_opt['strike'] - target_strike).abs().idxmin()
         row = df_opt.loc[idx]
@@ -167,17 +186,15 @@ def fetch_live_option_hint(symbol, target_dte, is_call, target_strike):
         return None
 
 
-@st.cache_data(ttl=300)
 def analyze_ticker(symbol, interval, swing_order, delta_mode, trading_mode):
     try:
         period_map = {"15m": "1mo", "1h": "3mo", "1d": "1y"}
         period = period_map.get(interval, "1y")
-        df = yf.download(symbol, period=period, interval=interval, progress=False)
-        if isinstance(df.columns, pd.MultiIndex):
-            df.columns = df.columns.get_level_values(0)
-        df.dropna(inplace=True)
-        if df.empty or len(df) < 50:
-            return None
+        df, err_msg = fetch_price_history(symbol, period, interval)
+        if df is None or df.empty or len(df) < 30:
+            return None, err_msg or "البيانات الواردة من المصدر فارغة أو غير مكتملة."
+
+        df = df.copy()
 
         # المتوسطات المتحركة
         df['EMA20'] = df['Close'].ewm(span=20, adjust=False).mean()
@@ -188,15 +205,14 @@ def analyze_ticker(symbol, interval, swing_order, delta_mode, trading_mode):
         gain = (delta_s.where(delta_s > 0, 0)).rolling(window=14).mean()
         loss = (-delta_s.where(delta_s < 0, 0)).rolling(window=14).mean()
         rs = gain / loss.replace(0, np.nan)
-        df['RSI'] = 100 - (100 / (1 + rs))
-        df['RSI'] = df['RSI'].fillna(50)
+        df['RSI'] = (100 - (100 / (1 + rs))).fillna(50)
 
         # مؤشر MACD
         df['MACD'] = df['Close'].ewm(span=12, adjust=False).mean() - df['Close'].ewm(span=26, adjust=False).mean()
         df['MACD_Signal'] = df['MACD'].ewm(span=9, adjust=False).mean()
         df['MACD_Hist'] = df['MACD'] - df['MACD_Signal']
 
-        # نطاقات بولنجر (Bollinger Bands) لكشف الانفجار السعري (Squeeze)
+        # نطاقات بولنجر (Bollinger Bands)
         df['BB_Mid'] = df['Close'].rolling(window=20).mean()
         bb_std = df['Close'].rolling(window=20).std()
         df['BB_Upper'] = df['BB_Mid'] + (bb_std * 2)
@@ -208,8 +224,9 @@ def analyze_ticker(symbol, interval, swing_order, delta_mode, trading_mode):
         high_close = np.abs(df['High'] - df['Close'].shift())
         low_close = np.abs(df['Low'] - df['Close'].shift())
         df['ATR'] = pd.concat([high_low, high_close, low_close], axis=1).max(axis=1).rolling(14).mean()
+        df['ATR'] = df['ATR'].bfill().fillna(df['Close'] * 0.015)
 
-        # التقلب التاريخي السنوي (HV) كمرجع للتسعير
+        # التقلب التاريخي السنوي (HV)
         log_returns = np.log(df['Close'] / df['Close'].shift(1))
         bars_per_year = {"15m": 252 * 26, "1h": 252 * 6.5, "1d": 252}.get(interval, 252)
         est_vol = float(log_returns.rolling(20).std().iloc[-1] * np.sqrt(bars_per_year))
@@ -235,7 +252,7 @@ def analyze_ticker(symbol, interval, swing_order, delta_mode, trading_mode):
         macd_val = float(df['MACD'].iloc[-1])
         macd_sig = float(df['MACD_Signal'].iloc[-1])
         bb_w = float(df['BB_Width'].iloc[-1])
-        bb_w_avg = float(df['BB_Width'].rolling(50).mean().iloc[-1])
+        bb_w_avg = float(df['BB_Width'].rolling(50, min_periods=10).mean().iloc[-1])
 
         # تحديد الاتجاه الهيكلي والزخم
         is_bullish = current_price > ema50_val
@@ -250,7 +267,7 @@ def analyze_ticker(symbol, interval, swing_order, delta_mode, trading_mode):
             score += 1
         if (is_bullish and 45 <= current_rsi <= 68) or (not is_bullish and 32 <= current_rsi <= 55):
             score += 1
-        is_squeeze = (not np.isnan(bb_w_avg)) and (bb_w < bb_w_avg * 0.85)
+        is_squeeze = (not np.isnan(bb_w)) and (not np.isnan(bb_w_avg)) and (bb_w < bb_w_avg * 0.85)
         if is_squeeze:
             score += 1
 
@@ -282,7 +299,7 @@ def analyze_ticker(symbol, interval, swing_order, delta_mode, trading_mode):
                 target_2 = current_price - current_atr * 3.2
                 stop_loss = current_price + current_atr * 1.0
 
-        # تحديد الصلاحية الزمنية (DTE) حسب أسلوب المضاربة (يومي vs سوينق)
+        # تحديد الصلاحية الزمنية (DTE) حسب أسلوب المضاربة
         if "يومي" in trading_mode or interval in ["15m", "1h"]:
             est_days_t1 = 1 if interval == "15m" else 2
             est_days_t2 = 3 if interval == "15m" else 5
@@ -303,7 +320,7 @@ def analyze_ticker(symbol, interval, swing_order, delta_mode, trading_mode):
         strike_rec = round_to_strike_step(raw_strike)
 
         # حساب اليونانيات والسعر النظري للعقد
-        greeks = calculate_bs_greeks(
+        greeks = calculate_bs_metrics(
             S=current_price, K=strike_rec, T_days=recommended_dte,
             r=0.045, sigma=est_vol, is_call=is_bullish
         )
@@ -318,6 +335,8 @@ def analyze_ticker(symbol, interval, swing_order, delta_mode, trading_mode):
             score += 1
 
         last_dt = df.index[-1].to_pydatetime() if hasattr(df.index[-1], 'to_pydatetime') else datetime.now()
+        if getattr(last_dt, "tzinfo", None) is not None:
+            last_dt = last_dt.replace(tzinfo=None)
         date_t1 = add_trading_days(last_dt, est_days_t1).strftime("%Y-%m-%d")
         date_t2 = add_trading_days(last_dt, est_days_t2).strftime("%Y-%m-%d")
         expiry_str = (last_dt + timedelta(days=recommended_dte)).strftime("%Y-%m-%d")
@@ -346,13 +365,13 @@ def analyze_ticker(symbol, interval, swing_order, delta_mode, trading_mode):
             "score": score,
             "macd_status": "إيجابي 🟢" if macd_val > macd_sig else "سلبي 🔴",
             "bb_status": "انفجار وشيك ⚡ (Squeeze)" if is_squeeze else "نطاق طبيعي 📊"
-        }
-    except Exception:
-        return None
+        }, ""
+    except Exception as e:
+        return None, str(e)
 
 
 # --- واجهة المستخدم ---
-st.title("📈 محلل العقود والسوينق الاحترافي (v2.3.0)")
+st.title("📈 محلل العقود والسوينق الاحترافي (v2.3.1)")
 st.markdown("منصة تحليلية مصممة بعقلية مضارب العقود: دمج الهيكل السعري، ATR، فيبوناتشي، اليونانيات، وإدارة المخاطر لكل عقد.")
 
 # القائمة الجانبية
@@ -362,6 +381,10 @@ default_tf_idx = 2 if "سوينق" in trading_mode else 1
 interval = st.sidebar.selectbox("الإطار الزمني:", ["15m", "1h", "1d"], index=default_tf_idx)
 ticker = st.sidebar.selectbox("الأصل المالي:", ["SPY", "QQQ", "IWM", "NVDA", "AAPL", "TSLA", "MSFT", "AMZN", "META", "AMD", "GOOGL", "NFLX"])
 swing_order = st.sidebar.slider("حساسية القمم والقيعان:", min_value=3, max_value=15, value=7)
+
+if st.sidebar.button("🔄 تحديث البيانات ومسح الكاش"):
+    st.cache_data.clear()
+    st.rerun()
 
 st.sidebar.markdown("---")
 st.sidebar.header("🎯 هندسة العقد والمخاطرة")
@@ -380,28 +403,27 @@ tab1, tab2, tab3 = st.tabs([
 ])
 
 with tab1:
-    res = analyze_ticker(ticker, interval, swing_order, delta_mode, trading_mode)
+    res, err_detail = analyze_ticker(ticker, interval, swing_order, delta_mode, trading_mode)
     if res is None:
-        st.warning("⚠️ تعذر جلب بيانات كافية لهذا الرمز على الإطار المحدد. جرب رمزاً آخر أو أعد المحاولة.")
+        st.warning(f"⚠️ تعذر جلب بيانات كافية للرمز ({ticker}) على الإطار ({interval}).")
+        if err_detail:
+            st.caption(f"تفاصيل تقنية: {err_detail}")
     else:
         df = res["df"]
         g = res["greeks"]
         live_opt = res["live_opt"]
 
-        # شريط الحالة المختصر
         st.info(
             f"**الأصل:** {ticker} ({interval})  |  **الاتجاه:** {res['trend']}  |  "
             f"**تقييم التوافق:** {res['score']}/5 ⭐  |  **MACD:** {res['macd_status']}  |  **البولنجر:** {res['bb_status']}"
         )
 
-        # الصف الأول: مستويات السهم الأساسية
         c1, c2, c3, c4 = st.columns(4)
         c1.metric("السعر الحالي", f"${res['current_price']:.2f}", f"ATR: ${res['current_atr']:.2f}")
         c2.metric("الهدف الأول (1.272)", f"${res['target_1']:.2f}", f"متوقع: {res['date_t1']}")
         c3.metric("الهدف الثاني (1.618)", f"${res['target_2']:.2f}", f"متوقع: {res['date_t2']}")
         c4.metric("وقف الخسارة (للسهم)", f"${res['stop_loss']:.2f}", f"R:R = 1 : {res['rr_ratio']:.2f}")
 
-        # حساب إدارة المخاطر وحجم العقود
         est_premium = live_opt["mid"] if (live_opt and live_opt["mid"] > 0.1) else g["premium"]
         contract_cost = est_premium * 100.0
         max_risk_dollars = portfolio_size * (risk_pct / 100.0)
@@ -432,7 +454,6 @@ with tab1:
             )
             st.success("تم حفظ الصفقة بكامل تفاصيلها في تبويب سجل الصفقات!")
 
-        # الرسم البياني المتكامل (الشموع + البولنجر + المتوسطات + RSI + MACD)
         fig = make_subplots(
             rows=3, cols=1, shared_xaxes=True, vertical_spacing=0.03,
             row_heights=[0.60, 0.20, 0.20],
@@ -474,7 +495,7 @@ with tab2:
         rows = []
         prog = st.progress(0)
         for idx, sym in enumerate(watchlist):
-            d = analyze_ticker(sym, interval, swing_order, delta_mode, trading_mode)
+            d, _ = analyze_ticker(sym, interval, swing_order, delta_mode, trading_mode)
             if d:
                 g = d["greeks"]
                 rows.append({
