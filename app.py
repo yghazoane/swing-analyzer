@@ -1,7 +1,7 @@
 """
 ================================================================================
 اسم الأداة: محلل العقود والسوينق الاحترافي (Pro Options & Swing Analyzer)
-الإصدار: v2.3.2 (إضافة مؤشر SPX 500 ودعم تتبع الأصول بدقة)
+الإصدار: v2.3.3 (دعم تصفية العقود الرخيصة < 3$ ومضاربات OTM)
 ================================================================================
 """
 
@@ -18,7 +18,7 @@ import os
 
 # إعدادات الصفحة
 st.set_page_config(
-    page_title="محلل العقود والسوينق الاحترافي v2.3.2",
+    page_title="محلل العقود والسوينق الاحترافي v2.3.3",
     layout="wide",
     initial_sidebar_state="expanded"
 )
@@ -131,7 +131,6 @@ def calculate_bs_metrics(S, K, T_days, r, sigma, is_call=True):
 def fetch_price_history(symbol, period, interval):
     """جلب البيانات التاريخية مع آلية احتياطية وتوافق مع رمز مؤشر SPX (^GSPC)"""
     try:
-        # مؤشر SPX في ياهو فاينانس يُرمز له بـ ^GSPC
         query_symbol = "^GSPC" if symbol == "SPX" else symbol
         tk = yf.Ticker(query_symbol)
         df = tk.history(period=period, interval=interval, auto_adjust=False)
@@ -149,7 +148,7 @@ def fetch_price_history(symbol, period, interval):
 
 @st.cache_data(ttl=600)
 def fetch_live_option_hint(symbol, target_dte, is_call, target_strike):
-    """جلب أقرب عقد حقيقي من سلسلة الأوبشن الحية (يدعم SPY و SPX عبر ^GSPC)"""
+    """جلب أقرب عقد حقيقي من سلسلة الأوبشن الحية"""
     try:
         query_symbol = "^GSPC" if symbol == "SPX" else symbol
         tk = yf.Ticker(query_symbol)
@@ -187,7 +186,7 @@ def fetch_live_option_hint(symbol, target_dte, is_call, target_strike):
         return None
 
 
-def analyze_ticker(symbol, interval, swing_order, delta_mode, trading_mode):
+def analyze_ticker(symbol, interval, swing_order, pricing_strategy, trading_mode):
     try:
         period_map = {"15m": "1mo", "1h": "3mo", "1d": "1y"}
         period = period_map.get(interval, "1y")
@@ -310,11 +309,14 @@ def analyze_ticker(symbol, interval, swing_order, delta_mode, trading_mode):
             est_days_t2 = max(6, int(wave_bars * 1.3))
             recommended_dte = min(60, max(28, est_days_t2 + 21))
 
-        # اختيار السترايك بناءً على Delta المستهدفة
-        if "OTM" in delta_mode:
-            raw_strike = current_price + (current_atr * 0.85 if is_bullish else -current_atr * 0.85)
-        elif "ITM" in delta_mode:
-            raw_strike = current_price - (current_atr * 0.85 if is_bullish else -current_atr * 0.85)
+        # هندسة السترايك بناءً على استراتيجية التسعير (عقود رخيصة < 3$ vs متوازن)
+        if "رخيصة" in pricing_strategy:
+            # ابتعاد أكبر عن السعر الحالي (OTM بنحو 1.5 إلى 2.0 ATR للحصول على قسط رخيص)
+            raw_strike = current_price + (current_atr * 1.8 if is_bullish else -current_atr * 1.8)
+            # تقليص الـ DTE للمضاربة السريعة بالعقود الرخيصة إذا طلب المستخدم
+            recommended_dte = min(recommended_dte, 7)
+        elif "هجومي" in pricing_strategy:
+            raw_strike = current_price + (current_atr * 0.9 if is_bullish else -current_atr * 0.9)
         else:
             raw_strike = current_price
 
@@ -372,16 +374,14 @@ def analyze_ticker(symbol, interval, swing_order, delta_mode, trading_mode):
 
 
 # --- واجهة المستخدم ---
-st.title("📈 محلل العقود والسوينق الاحترافي (v2.3.2)")
-st.markdown("منصة تحليلية مصممة بعقلية مضارب العقود: دمج الهيكل السعري، ATR، فيبوناتشي، اليونانيات، وإدارة المخاطر لكل عقد.")
+st.title("📈 محلل العقود والسوينق الاحترافي (v2.3.3)")
+st.markdown("منصة تحليلية مصممة بعقلية مضارب العقود: دعم العقود الرخيصة (< 3$) للمضاربات اليومية السريعة وإدارة المخاطر.")
 
 # القائمة الجانبية
 st.sidebar.header("⚙️ إعدادات التداول")
 trading_mode = st.sidebar.radio("أسلوب المضاربة:", ["سوينق (Swing | 21-45 DTE)", "مضاربة يومية / قصيرة (Intraday | 7-14 DTE)"])
 default_tf_idx = 2 if "سوينق" in trading_mode else 1
 interval = st.sidebar.selectbox("الإطار الزمني:", ["15m", "1h", "1d"], index=default_tf_idx)
-
-# إضافة SPX بجانب SPY وبقية الأصول
 ticker = st.sidebar.selectbox("الأصل المالي:", ["SPX", "SPY", "QQQ", "IWM", "NVDA", "AAPL", "TSLA", "MSFT", "AMZN", "META", "AMD", "GOOGL", "NFLX"])
 swing_order = st.sidebar.slider("حساسية القمم والقيعان:", min_value=3, max_value=15, value=7)
 
@@ -390,10 +390,15 @@ if st.sidebar.button("🔄 تحديث البيانات ومسح الكاش"):
     st.rerun()
 
 st.sidebar.markdown("---")
-st.sidebar.header("🎯 هندسة العقد والمخاطرة")
-delta_mode = st.sidebar.selectbox(
-    "اختيار السترايك (Delta):",
-    ["متوازن (ATM | Delta ~0.50)", "هجومي (OTM | Delta ~0.35)", "تحوطي (ITM | Delta ~0.65)"]
+st.sidebar.header("🎯 استراتيجية التسعير والعقود")
+pricing_strategy = st.sidebar.selectbox(
+    "فلتر تصفية العقود:",
+    [
+        "🔥 عقود رخيصة ومضاربية (< $3.00 للتكلفة المبدئية)",
+        "⚖️ متوازن (ATM | Delta ~0.50)",
+        "⚡ هجومي (OTM متوسط | Delta ~0.35)",
+        "🛡️ تحوطي آمن (ITM | Delta ~0.65)"
+    ]
 )
 portfolio_size = st.sidebar.number_input("حجم المحفظة ($):", min_value=1000, value=10000, step=1000)
 risk_pct = st.sidebar.number_input("المخاطرة القصوى للصفقة (%):", min_value=0.5, max_value=5.0, value=1.5, step=0.5)
@@ -406,7 +411,7 @@ tab1, tab2, tab3 = st.tabs([
 ])
 
 with tab1:
-    res, err_detail = analyze_ticker(ticker, interval, swing_order, delta_mode, trading_mode)
+    res, err_detail = analyze_ticker(ticker, interval, swing_order, pricing_strategy, trading_mode)
     if res is None:
         st.warning(f"⚠️ تعذر جلب بيانات كافية للرمز ({ticker}) على الإطار ({interval}).")
         if err_detail:
@@ -435,8 +440,12 @@ with tab1:
 
         st.markdown("### 🎯 بطاقة العقد المقترح واليونانيات")
         g1, g2, g3, g4, g5 = st.columns(5)
+        
+        # تنبيه إذا كانت استراتيجية العقود الرخيصة مفعلة والسعر أقل من 3$
+        premium_badge = "🟢 رخيص جداً (<$3)" if est_premium < 3.0 else "⚠️ قسط مرتفع"
+        
         g1.metric("نوع العقد والسترايك", f"{res['option_type'].split()[0]} ${res['strike_rec']}", f"DTE: {res['recommended_dte']} يوم")
-        g2.metric("سعر العقد التقديري", f"${est_premium:.2f}", f"التكلفة: ${contract_cost:.0f}/عقد")
+        g2.metric("سعر العقد التقديري", f"${est_premium:.2f}", f"التكلفة: ${contract_cost:.0f}/عقد ({premium_badge})")
         g3.metric("الدلتا (Delta Δ)", f"{g['delta']:.2f}", f"الجاما: {g['gamma']:.4f}")
         g4.metric("الثيتا (Theta Θ)", f"-${abs(g['theta_daily'])*100:.2f}/يوم", f"IV: {g['iv_pct']:.1f}%")
         g5.metric("حجم الصفقة المقترح", f"{suggested_contracts} عقد", f"مخاطرة: ${max_risk_dollars:.0f}")
@@ -491,14 +500,14 @@ with tab2:
     st.subheader("🔍 الماسح الآلي للفرص (المضاربة اليومية والسوينق)")
     watchlist = st.multiselect(
         "اختر قائمة الأسهم والمؤشرات للفحص:",
-        ["SPX", "SPY", "QQQ", "IWM", "NVDA", "AAPL", "TSLA", "MSFT", "AMZN", "META", "AMD"],
+        ["SPX", "SPY", "QQQ", "IWM", "NVDA", "AAPL", "TSLA", "MSFT", "AMZN", "META", "AMD", "GOOGL", "NFLX"],
         default=["SPX", "SPY", "QQQ", "NVDA", "AAPL", "TSLA", "META"]
     )
     if st.button("🚀 بدء الفحص الشامل", type="primary"):
         rows = []
         prog = st.progress(0)
         for idx, sym in enumerate(watchlist):
-            d, _ = analyze_ticker(sym, interval, swing_order, delta_mode, trading_mode)
+            d, _ = analyze_ticker(sym, interval, swing_order, pricing_strategy, trading_mode)
             if d:
                 g = d["greeks"]
                 rows.append({
