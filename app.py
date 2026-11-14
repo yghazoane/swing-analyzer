@@ -1,7 +1,7 @@
 """
 ================================================================================
 اسم الأداة: محلل العقود والسوينق الاحترافي (Pro Options & Swing Analyzer)
-الإصدار: v2.3.9
+الإصدار: v2.4.0
 الوصف: تحليل هيكلي للأسهم والمؤشرات (بما فيها SPX 500)، تحديد الأهداف بفيبوناتشي
        و ATR، تسعير العقود وحساب اليونانيات، وإدارة حجم العقود مع فلتر ذكي
        للبحث التلقائي عن العقود الرخيصة (< $3.00) حتى على مؤشر SPX.
@@ -21,7 +21,7 @@ import os
 
 # إعدادات الصفحة
 st.set_page_config(
-    page_title="محلل العقود والسوينق الاحترافي v2.3.9",
+    page_title="محلل العقود والسوينق الاحترافي v2.4.0",
     layout="wide",
     initial_sidebar_state="expanded"
 )
@@ -158,13 +158,21 @@ def calculate_bs_metrics(S, K, T_days, r, sigma, is_call=True):
     vega = (S * norm.pdf(d1) * sqrt_T) / 100.0
     theta_daily = theta_annual / 365.0
 
+    # احتمالية الربح التقريبية (PoP) بناءً على d2 وتكلفة العقد (نقطة التعادل)
+    breakeven = (K + price) if is_call else max(K - price, 0.01)
+    d2_be = (np.log(S / breakeven) + (r - 0.5 * sigma ** 2) * T) / (sigma * sqrt_T)
+    pop_pct = float(norm.cdf(d2_be) * 100.0) if is_call else float(norm.cdf(-d2_be) * 100.0)
+    pop_pct = min(max(pop_pct, 5.0), 95.0)
+
     return {
         "premium": max(float(price), 0.05),
         "delta": float(delta),
         "gamma": float(gamma),
         "theta_daily": float(theta_daily),
         "vega": float(vega),
-        "iv_pct": float(sigma * 100)
+        "iv_pct": float(sigma * 100),
+        "pop_pct": pop_pct,
+        "breakeven": float(breakeven)
     }
 
 
@@ -226,7 +234,22 @@ def fetch_live_option_hint(symbol, target_dte, is_call, target_strike, budget_mo
             key=lambda x: abs((datetime.strptime(x, "%Y-%m-%d").date() - today).days - target_dte)
         )
         chain = tk.option_chain(best_exp)
-        df_opt = chain.calls if is_call else chain.puts
+        calls_df = chain.calls if chain.calls is not None else pd.DataFrame()
+        puts_df = chain.puts if chain.puts is not None else pd.DataFrame()
+
+        # حساب نسبة Put/Call (PCR) وجدران العقود المفتوحة (OI Walls) للجلسة
+        total_call_oi = float(calls_df['openInterest'].fillna(0).sum()) if not calls_df.empty else 0.0
+        total_put_oi = float(puts_df['openInterest'].fillna(0).sum()) if not puts_df.empty else 0.0
+        total_call_vol = float(calls_df['volume'].fillna(0).sum()) if not calls_df.empty else 0.0
+        total_put_vol = float(puts_df['volume'].fillna(0).sum()) if not puts_df.empty else 0.0
+
+        pcr_oi = (total_put_oi / total_call_oi) if total_call_oi > 0 else 1.0
+        pcr_vol = (total_put_vol / total_call_vol) if total_call_vol > 0 else pcr_oi
+
+        call_wall = float(calls_df.loc[calls_df['openInterest'].fillna(0).idxmax(), 'strike']) if (not calls_df.empty and total_call_oi > 0) else None
+        put_wall = float(puts_df.loc[puts_df['openInterest'].fillna(0).idxmax(), 'strike']) if (not puts_df.empty and total_put_oi > 0) else None
+
+        df_opt = calls_df if is_call else puts_df
         if df_opt is None or df_opt.empty:
             return None
 
@@ -264,7 +287,11 @@ def fetch_live_option_hint(symbol, target_dte, is_call, target_strike, budget_mo
             "spread_pct": spread_pct,
             "volume": int(row.get('volume', 0) or 0),
             "oi": int(row.get('openInterest', 0) or 0),
-            "iv": float(row.get('impliedVolatility', 0) or 0) * 100
+            "iv": float(row.get('impliedVolatility', 0) or 0) * 100,
+            "pcr_oi": round(pcr_oi, 2),
+            "pcr_vol": round(pcr_vol, 2),
+            "call_wall": call_wall,
+            "put_wall": put_wall
         }
     except Exception:
         return None
@@ -361,13 +388,15 @@ def analyze_ticker(symbol, interval, swing_order, pricing_strategy, trading_mode
         recent_res = float(last_highs['Swing_High'].iloc[-1]) if len(last_highs) >= 1 else bb_up_val
         recent_sup = float(last_lows['Swing_Low'].iloc[-1]) if len(last_lows) >= 1 else bb_low_val
 
-        # التحقق من حجم التداول (إن وجد)
+        # التحقق من حجم التداول وانفجار السيولة (Volume Spike Ratio)
         vol_ok = True
+        vol_ratio = 1.0
         if 'Volume' in df.columns and df['Volume'].sum() > 0:
             avg_vol = float(df['Volume'].rolling(20, min_periods=5).mean().iloc[-1])
             curr_vol = float(df['Volume'].iloc[-1])
             if avg_vol > 0:
-                vol_ok = curr_vol >= (avg_vol * 0.95)
+                vol_ratio = curr_vol / avg_vol
+                vol_ok = vol_ratio >= 1.15
 
         if is_bullish:
             broke_level = (current_price > recent_res) or (current_price > bb_up_val)
@@ -377,10 +406,10 @@ def analyze_ticker(symbol, interval, swing_order, pricing_strategy, trading_mode
             momentum_ok = (macd_val < macd_sig) and (current_price < ema20_val)
 
         if broke_level and momentum_ok and vol_ok:
-            breakout_status = f"كسر حقيقي مؤكد بإغلاق ({interval}) 🟢"
+            breakout_status = f"كسر حقيقي مؤكد ({interval} • سيولة {vol_ratio:.1f}x) 🟢"
             score = min(5, score + 1)
         elif broke_level and (not momentum_ok or not vol_ok):
-            breakout_status = f"تحذير: كسر وهمي محتمل على ({interval}) ⚠️"
+            breakout_status = f"فخ صانع سوق / كسر وهمي ({interval} • سيولة {vol_ratio:.1f}x) ⚠️"
         else:
             breakout_status = f"داخل النطاق - بانتظار إغلاق ({interval}) ⏳" 
 
@@ -457,6 +486,39 @@ def analyze_ticker(symbol, interval, swing_order, pricing_strategy, trading_mode
             budget_mode=is_budget_mode, max_budget=max_contract_price
         )
 
+        # تحليل السيولة المؤسسية، جدران OI، وفلتر السبريد اللحظي
+        spread_status = "غير متوفر (تسعير نظري)"
+        oi_wall_note = "بانتظار بيانات السلسلة الحية"
+        pcr_note = "متعادل"
+        if live_opt:
+            sp = live_opt.get("spread_pct", 0.0)
+            if sp > 10.0:
+                spread_status = f"سبريد خطر ({sp:.1f}%) - تجنب أمر السوق 🔴"
+            elif sp > 6.0:
+                spread_status = f"سبريد متوسط ({sp:.1f}%) - استخدم Limit ⚠️"
+            else:
+                spread_status = f"سبريد ممتاز ({sp:.1f}%) - سيولة عالية 🟢"
+
+            cw = live_opt.get("call_wall")
+            pw = live_opt.get("put_wall")
+            pcr_v = live_opt.get("pcr_oi", 1.0)
+            if pcr_v > 1.15:
+                pcr_note = f"PCR {pcr_v} (تمركز تحوط/هبوط 🔴)"
+            elif pcr_v < 0.80:
+                pcr_note = f"PCR {pcr_v} (تمركز صعودي 🟢)"
+            else:
+                pcr_note = f"PCR {pcr_v} (متوازن ⚖️)"
+
+            wall_parts = []
+            if cw:
+                dist_cw = ((cw - current_price) / current_price) * 100
+                wall_parts.append(f"جدار Call: ${cw:.0f} ({dist_cw:+.1f}%)")
+            if pw:
+                dist_pw = ((pw - current_price) / current_price) * 100
+                wall_parts.append(f"جدار Put: ${pw:.0f} ({dist_pw:+.1f}%)")
+            if wall_parts:
+                oi_wall_note = " | ".join(wall_parts)
+
         # في وضع العقود الرخيصة، إذا وجدنا عقداً حياً تحت السقف نعتمد سترايكه الفعلي
         if is_budget_mode and live_opt and 0.15 < live_opt["mid"] <= max_contract_price:
             strike_rec = live_opt["strike"]
@@ -517,14 +579,18 @@ def analyze_ticker(symbol, interval, swing_order, pricing_strategy, trading_mode
             "macd_status": "إيجابي 🟢" if macd_val > macd_sig else "سلبي 🔴",
             "bb_status": "انفجار وشيك ⚡ (Squeeze)" if is_squeeze else "نطاق طبيعي 📊",
             "breakout_status": breakout_status,
-            "market_note": market_note
+            "market_note": market_note,
+            "spread_status": spread_status,
+            "oi_wall_note": oi_wall_note,
+            "pcr_note": pcr_note,
+            "vol_ratio": vol_ratio
         }, ""
     except Exception as e:
         return None, str(e)
 
 
 # --- واجهة المستخدم ---
-st.title("📈 محلل العقود والسوينق الاحترافي (v2.3.9)")
+st.title("📈 محلل العقود والسوينق الاحترافي (v2.4.0)")
 st.markdown("منصة تحليلية مصممة بعقلية مضارب العقود: محرك بحث ذكي لإيجاد العقود الرخيصة (< $3.00) حتى على مؤشر SPX.")
 
 # القائمة الجانبية
@@ -617,7 +683,49 @@ with tab1:
         g2.metric("سعر العقد التقديري", f"${est_premium:.2f}", f"التكلفة ${contract_cost:.0f} • {premium_badge}")
         g3.metric("الدلتا (Delta Δ)", f"{g['delta']:.2f}", f"الجاما: {g['gamma']:.4f}")
         g4.metric("الثيتا (Theta Θ)", f"-${abs(g['theta_daily'])*100:.2f}/يوم", f"IV: {g['iv_pct']:.1f}%")
-        g5.metric("حجم الصفقة المقترح", f"{suggested_contracts} عقد", f"مخاطرة: ${max_risk_dollars:.0f}")
+        g5.metric("حجم الصفقة المقترح", f"{suggested_contracts} عقد", f"احتمالية الربح PoP: {g['pop_pct']:.0f}%")
+
+        # شريط نبض السيولة المؤسسية وجدران العقود المفتوحة (OI Walls) + مراقبة السبريد
+        st.info(
+            f"🏛️ **النبض المؤسسي (OI & PCR):** {res['pcr_note']} &nbsp;|&nbsp; "
+            f"**جدران السترايكات:** {res['oi_wall_note']} &nbsp;|&nbsp; "
+            f"**فلتر السبريد اللحظي:** {res['spread_status']}"
+        )
+
+        # خريطة إدارة الصفقة وجني الأرباح الجزئي وتآكل الوقت (Theta Matrix)
+        with st.expander("🧭 خريطة إدارة الصفقة المفتوحة (جني الأرباح الجزئي وتآكل الثيتا)", expanded=False):
+            move_t1 = abs(res['target_1'] - res['current_price'])
+            move_t2 = abs(res['target_2'] - res['current_price'])
+            # تقدير ربح العقد عند الهدف 1 والهدف 2 باستخدام دلتا وجاما
+            est_gain_t1 = abs(g['delta']) * move_t1 + 0.5 * g['gamma'] * (move_t1 ** 2)
+            est_gain_t2 = abs(g['delta']) * move_t2 + 0.5 * g['gamma'] * (move_t2 ** 2)
+            opt_price_t1 = est_premium + est_gain_t1
+            opt_price_t2 = est_premium + est_gain_t2
+            opt_sl_price = est_premium * (1.0 - contract_sl_pct / 100.0)
+            theta_2h_loss = (abs(g['theta_daily']) * 100.0) * (2.0 / 6.5)  # تآكل ساعتين من جلسة 6.5 ساعات
+            half_contracts = max(1, suggested_contracts // 2)
+
+            m1, m2, m3, m4 = st.columns(4)
+            m1.metric(
+                "1️⃣ جني ربح جزئي (الهدف 1)",
+                f"${opt_price_t1:.2f} (+{((opt_price_t1/est_premium)-1)*100:.0f}%)",
+                f"بيع {half_contracts} عقد وتأمين الباقي على الدخول"
+            )
+            m2.metric(
+                "2️⃣ الهدف النهائي (الهدف 2)",
+                f"${opt_price_t2:.2f} (+{((opt_price_t2/est_premium)-1)*100:.0f}%)",
+                f"إغلاق المتبقي عند ${res['target_2']:.2f}"
+            )
+            m3.metric(
+                "3️⃣ وقف خسارة العقد الصارم",
+                f"${opt_sl_price:.2f} (-{contract_sl_pct}%)",
+                f"أو كسر السهم لـ ${res['stop_loss']:.2f}"
+            )
+            m4.metric(
+                "4️⃣ تآكل الوقت (كل ساعتين تذبذب)",
+                f"-${theta_2h_loss:.2f}/عقد",
+                f"نقطة تعادل السهم: ${g['breakeven']:.2f}"
+            )
 
         if live_opt:
             spread_warn = "⚠️ سبريد واسع - استخدم Limit Order" if live_opt["spread_pct"] > 8 else "✅ سيولة جيدة"
@@ -688,6 +796,7 @@ with tab2:
                     "Strike": f"${d['strike_rec']}",
                     "قسط تقديري": f"${g['premium']:.2f}",
                     "Delta Δ": f"{g['delta']:.2f}",
+                    "احتمالية PoP": f"{g['pop_pct']:.0f}%",
                     "Theta/يوم": f"-${abs(g['theta_daily'])*100:.1f}",
                     "MACD": d['macd_status'],
                     "البولنجر": d['bb_status'],
