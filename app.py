@@ -1,12 +1,41 @@
 import streamlit as st
+import yfinance as yf
 import pandas as pd
+import numpy as np
+import plotly.graph_objects as go
+from plotly.subplots import make_subplots
+from scipy.signal import argrelextrema
+from datetime import datetime, timedelta
 import os
-from datetime import datetime
 
-# إعداد الصفحة
-st.set_page_config(page_title="حاسبة وإدارة مخاطر الخيارات", layout="wide")
+# إعدادات الصفحة الأساسية
+st.set_page_config(
+    page_title="محلل السوينق والموجات الاحترافي", 
+    layout="wide",
+    initial_sidebar_state="expanded"
+)
 
-# ملف حفظ السجل محلياً بصيغة CSV
+# --- CSS دعم RTL وخط Cairo + (Balanced & Clean) حزمة التصميم البصري ---
+st.markdown("""
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Cairo:wght@400;600;700;800&display=swap');
+
+html, body, [class*="css"] {
+    font-family: 'Cairo', sans-serif;
+    direction: rtl;
+    text-align: right;
+}
+
+.stButton>button {
+    border-radius: 8px;
+    font-weight: 700;
+}
+</style>
+""", unsafe_allow_html=True)
+
+# ==========================================
+# نظام سجل تتبع الأداء والصفقات الحية
+# ==========================================
 LOG_FILE = "trade_history.csv"
 
 def init_trade_log():
@@ -38,23 +67,55 @@ def log_new_trade(ticker, opt_type, strike, alert_price):
     df.to_csv(LOG_FILE, index=False)
 
 # ==========================================
-# واجهة التطبيق الرئيسية
+# الواجهة الجانبية والتحكم الأساسي
 # ==========================================
-st.title("📈 حاسبة إدارة المخاطر وماسح صفقات الخيارات")
+st.sidebar.title("🎛️ لوحة التحكم والتحليل")
+ticker_symbol = st.sidebar.text_input("اختر الرمز (Ticker)", value="META").upper()
+timeframe = st.sidebar.selectbox("الإطار الزمني (Timeframe)", ["1d", "1h", "4h"], index=0)
+sensitivity = st.sidebar.slider("حساسية اكتشاف القمم والقيعان", 1, 15, 7)
+
+st.title("📈 محلل السوينق والموجات الاحترافي مع سجل التتبع")
 st.markdown("---")
 
-# قسم تجريبي لعرض الواجهة الأساسية للأداة
-st.subheader("⚙️ لوحة التحكم والإعدادات الفنية")
-col_s1, col_s2 = st.columns(2)
-with col_s1:
-    timeframe = st.selectbox("الإطار الزمني (Timeframe)", ["1d", "1h", "4h"])
-with col_s2:
-    sensitivity = st.slider("حساسية اكتشاف القمم والقيعان (Swing Sensitivity)", 1, 15, 7)
+# جلب بيانات السهم الحية عبر yfinance
+@st.cache_data(ttl=300)
+def load_data(ticker, period="6mo", interval="1d"):
+    df = yf.download(ticker, period=period, interval=interval)
+    if isinstance(df.columns, pd.MultiIndex):
+        df.columns = df.columns.get_level_values(0)
+    return df
 
-st.markdown("---")
+data_load_state = st.text("جاري تحميل بيانات السوق الحية...")
+df = load_data(ticker_symbol, period="6mo", interval=timeframe)
+data_load_state.text("")
+
+if df.empty:
+    st.error("لم يتم العثور على بيانات لهذا الرمز. تأكد من صحة الرمز المدخل.")
+else:
+    # حساب المتوسط المتحرك والمؤشرات الفنية البسيطة للماسح
+    df['EMA_50'] = df['Close'].ewm(span=50, adjust=False).mean()
+    delta = df['Close'].diff()
+    gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
+    loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
+    rs = gain / loss
+    df['RSI'] = 100 - (100 / (1 + rs))
+    
+    current_price = float(df['Close'].iloc[-1])
+    current_rsi = float(df['RSI'].iloc[-1]) if not np.isnan(df['RSI'].iloc[-1]) else 50.0
+    ema_50 = float(df['EMA_50'].iloc[-1])
+    
+    trend_status = "صاعد (Bullish) 🟢" if current_price > ema_50 else "هابط (Bearish) 🔴"
+    
+    # عرض ملخص التحليل الحالي
+    col1, col2, col3 = st.columns(3)
+    col1.metric("السعر الحالي", f"${current_price:.2f}")
+    col2.metric("الاتجاه العام (EMA 50)", trend_status)
+    col3.metric("مؤشر الزخم RSI", f"{current_rsi:.1f}")
+    
+    st.markdown("---")
 
 # ==========================================
-# سجل تتبع الأداء والصفقات الحية
+# قسم سجل تتبع الأداء والصفقات الحية (Trade Journal)
 # ==========================================
 st.subheader("📊 سجل تتبع الأداء والصفقات الحية (Trade Journal)")
 
@@ -67,7 +128,7 @@ if not history_df.empty:
             (history_df["Max_Price_Reached"] - history_df["Alert_Price"]) / history_df["Alert_Price"] * 100
         ).round(2)
 
-    st.write("💡 **تلميح:** يمكنك تعديل خانة (أعلى سعر وصل له Max_Price_Reached) مباشرة من الجدول أدناه لتحديث أداء العقود:")
+    st.write("💡 **تلميح:** يمكنك تحديث خانة (أعلى سعر وصل له Max_Price_Reached) مباشرة من الجدول أدناه لقياس الأداء بدقة (مثل تحديث عقد META إلى 20.20):")
     
     edited_df = st.data_editor(
         history_df, 
@@ -92,9 +153,7 @@ if not history_df.empty:
 else:
     st.info("لا توجد صفقات مسجلة حتى الآن. يمكنك إضافة عقود للمراقبة عبر النموذج أدناه.")
 
-# ==========================================
-# نموذج إضافة صفقة جديدة يدوياً
-# ==========================================
+# نموذج إضافة صفقة جديدة يدوياً أو ربطها بالماسح
 with st.expander("➕ إضافة عقد جديد للمراقبة يدوياً"):
     with st.form("add_trade_form"):
         col1, col2, col3, col4 = st.columns(4)
