@@ -1,3 +1,11 @@
+"""
+================================================================================
+اسم الأداة: محلل السوينق والموجات الاحترافي مع حاسبة اليونانيات وسجل التتبع
+الإصدار: v2.1.0
+تاريخ التحديث: 2026-11-14
+================================================================================
+"""
+
 import streamlit as st
 import yfinance as yf
 import pandas as pd
@@ -5,11 +13,12 @@ import numpy as np
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 from scipy.signal import argrelextrema
+from scipy.stats import norm
 from datetime import datetime, timedelta
 import os
 
 # إعدادات الصفحة الأساسية
-st.set_page_config(page_title="محلل السوينق والموجات الاحترافي", layout="wide", initial_sidebar_state="expanded")
+st.set_page_config(page_title="محلل السوينق والموجات الاحترافي v2.1", layout="wide", initial_sidebar_state="expanded")
 
 # --- حزمة التصميم البصري: الخيار الثالث (متوازن ونظيف Balanced & Clean) + دعم RTL وخط Cairo ---
 st.markdown("""
@@ -111,6 +120,20 @@ html, body, [class*="css"], .stMarkdown, .stText, p, h1, h2, h3, h4, label, butt
     font-weight: 700;
 }
 
+/* بطاقة شرح اليونانيات الديناميكية */
+.greeks-explain-box {
+    background: linear-gradient(145deg, #192030, #141926);
+    border: 1px solid #2D3748;
+    border-right: 4px solid #A78BFA;
+    border-radius: 10px;
+    padding: 18px 22px;
+    margin-top: 15px;
+    margin-bottom: 20px;
+    direction: rtl;
+    text-align: right;
+    line-height: 1.75;
+}
+
 /* تحسين التبويبات */
 .stTabs [data-baseweb="tab-list"] {
     gap: 10px;
@@ -186,17 +209,29 @@ def log_new_trade(ticker, opt_type, strike, alert_price):
 # --- ترويسة الصفحة ---
 st.markdown("""
 <div class="rtl-box">
-    <h1 style="margin-bottom: 4px; color: #F8FAFC; font-weight: 800;">📈 لوحة تحليل السوينق والأهداف الزمنية (SPY / QQQ)</h1>
-    <p style="color: #94A3B8; font-size: 1.05rem; margin-bottom: 18px;">منصة تحليلية لتحديد هيكل السوق، الموجات السعرية، وتقدير مناطق الاحتمالات السعرية والزمنية لعقود الخيارات مع سجل تتبع الأداء.</p>
+    <h1 style="margin-bottom: 4px; color: #F8FAFC; font-weight: 800;">📈 محلل السوينق والموجات الاحترافي (الإصدار v2.1)</h1>
+    <p style="color: #94A3B8; font-size: 1.05rem; margin-bottom: 18px;">منصة تحليلية متكاملة لهيكل السوق، الموجات السعرية، هندسة اليونانيات (Delta / Gamma / Theta)، وسجل تتبع الأداء.</p>
 </div>
 """, unsafe_allow_html=True)
 
 # --- القائمة الجانبية (المدخلات والتحكم الحي) ---
-st.sidebar.markdown('<div class="rtl-box"><h3>⚙️ إعدادات التحليل والتحكم</h3></div>', unsafe_allow_html=True)
+st.sidebar.markdown('<div class="rtl-box"><h3>⚙️ إعدادات التحليل والتحكم (v2.1)</h3></div>', unsafe_allow_html=True)
 ticker = st.sidebar.selectbox("اختر المؤشر / السهم:", ["SPY", "QQQ", "IWM", "NVDA", "AAPL", "TSLA", "MSFT", "AMZN", "META"])
 interval = st.sidebar.selectbox("الإطار الزمني (Timeframe):", ["1d", "1h"], index=0)
 period = "1y" if interval == "1d" else "3mo"
 swing_order = st.sidebar.slider("حساسية اكتشاف القمم والقيعان (Swing Sensitivity):", min_value=3, max_value=15, value=7)
+
+st.sidebar.markdown("---")
+st.sidebar.markdown('<div class="rtl-box"><h4>🎛️ إعدادات العقود واليونانيات</h4></div>', unsafe_allow_html=True)
+trade_style = st.sidebar.selectbox(
+    "نمط اختيار العقد (Delta Target):",
+    [
+        "متوازن (ATM | Delta ~0.50)",
+        "هجومي عالي الرافعة (OTM | Delta ~0.35)",
+        "تحوطي عالي الأمان (ITM | Delta ~0.65)"
+    ],
+    index=0
+)
 risk_pct = st.sidebar.number_input("نسبة المخاطرة من المحفظة (%):", min_value=0.5, max_value=5.0, value=1.0, step=0.5)
 portfolio_size = st.sidebar.number_input("حجم المحفظة ($):", min_value=1000, value=10000, step=1000)
 
@@ -210,9 +245,43 @@ def add_trading_days(start_date, trading_days):
             added += 1
     return current_date
 
+# --- دالة حساب اليونانيات التقديرية عبر نموذج بلاك-شولز (Black-Scholes Greeks) ---
+def calculate_bs_greeks(S, K, T_days, r, sigma, is_call=True):
+    """
+    S: السعر الحالي للسهم
+    K: سعر التنفيذ (Strike)
+    T_days: الأيام المتبقية لانتهاء العقد (DTE)
+    r: معدل الفائدة الخالي من المخاطرة (مثلاً 0.045)
+    sigma: التقلب السنوي المقدر (Historical/Implied Volatility)
+    """
+    T = max(T_days / 365.0, 1e-5)
+    sigma = max(sigma, 0.10)  # حد أدنى منطقي للتقلب 10%
+    
+    d1 = (np.log(S / K) + (r + 0.5 * sigma ** 2) * T) / (sigma * np.sqrt(T))
+    d2 = d1 - sigma * np.sqrt(T)
+    
+    if is_call:
+        delta = norm.cdf(d1)
+        theta_annual = (- (S * norm.pdf(d1) * sigma) / (2 * np.sqrt(T)) 
+                        - r * K * np.exp(-r * T) * norm.cdf(d2))
+    else:
+        delta = norm.cdf(d1) - 1.0
+        theta_annual = (- (S * norm.pdf(d1) * sigma) / (2 * np.sqrt(T)) 
+                        + r * K * np.exp(-r * T) * norm.cdf(-d2))
+        
+    gamma = norm.pdf(d1) / (S * sigma * np.sqrt(T))
+    theta_daily = theta_annual / 365.0  # التآكل اليومي بالدولار لكل سهم (يُضرب في 100 للعقد الواحد)
+    
+    return {
+        "delta": delta,
+        "gamma": gamma,
+        "theta_daily": theta_daily,
+        "iv_pct": sigma * 100
+    }
+
 # --- دالة التحليل المتكاملة لأي سهم أو مؤشر ---
 @st.cache_data(ttl=300)
-def analyze_ticker(symbol, period, interval, swing_order):
+def analyze_ticker(symbol, period, interval, swing_order, style_choice):
     df = yf.download(symbol, period=period, interval=interval, progress=False)
     if isinstance(df.columns, pd.MultiIndex):
         df.columns = df.columns.get_level_values(0)
@@ -237,6 +306,13 @@ def analyze_ticker(symbol, period, interval, swing_order):
     true_range = np.max(ranges, axis=1)
     df['ATR'] = true_range.rolling(14).mean()
     
+    # حساب التقلب التاريخي السنوي (Annualized Volatility) لتقدير اليونانيات بدقة
+    log_returns = np.log(df['Close'] / df['Close'].shift(1))
+    annual_factor = 252 if interval == "1d" else (252 * 6.5)
+    est_volatility = float(log_returns.rolling(20).std().iloc[-1] * np.sqrt(annual_factor))
+    if np.isnan(est_volatility) or est_volatility <= 0:
+        est_volatility = 0.25
+        
     df['Swing_High'] = df.iloc[argrelextrema(df['High'].values, np.greater_equal, order=swing_order)[0]]['High']
     df['Swing_Low'] = df.iloc[argrelextrema(df['Low'].values, np.less_equal, order=swing_order)[0]]['Low']
     
@@ -270,12 +346,10 @@ def analyze_ticker(symbol, period, interval, swing_order):
             target_1 = recent_low_price + (wave_height * 1.272)
             target_2 = recent_low_price + (wave_height * 1.618)
             stop_loss = recent_low_price - (current_atr * 0.5)
-            strike_rec = round(current_price)
         else:
             target_1 = recent_high_price - (wave_height * 1.272)
             target_2 = recent_high_price - (wave_height * 1.618)
             stop_loss = recent_high_price + (current_atr * 0.5)
-            strike_rec = round(current_price)
             
         est_bars_t1 = int(wave_bars * 1.0)
         est_bars_t2 = int(wave_bars * 1.618)
@@ -288,8 +362,25 @@ def analyze_ticker(symbol, period, interval, swing_order):
         target_1 = current_price * 1.02 if is_bullish else current_price * 0.98
         target_2 = current_price * 1.04 if is_bullish else current_price * 0.96
         stop_loss = current_price * 0.98 if is_bullish else current_price * 1.02
-        strike_rec = round(current_price)
         est_days_t1, est_days_t2, recommended_dte = 5, 10, 35
+
+    # اختيار سعر التنفيذ (Strike) بناءً على نمط الدلتا المختار
+    if "OTM" in style_choice:
+        strike_rec = round(current_price + current_atr * 0.75) if is_bullish else round(current_price - current_atr * 0.75)
+    elif "ITM" in style_choice:
+        strike_rec = round(current_price - current_atr * 0.75) if is_bullish else round(current_price + current_atr * 0.75)
+    else:
+        strike_rec = round(current_price)
+
+    # حساب اليونانيات للعقد المقترح
+    greeks = calculate_bs_greeks(
+        S=current_price,
+        K=strike_rec,
+        T_days=recommended_dte,
+        r=0.045,
+        sigma=est_volatility,
+        is_call=is_bullish
+    )
 
     date_t1 = add_trading_days(last_date, est_days_t1).strftime("%Y-%m-%d")
     date_t2 = add_trading_days(last_date, est_days_t2).strftime("%Y-%m-%d")
@@ -316,10 +407,11 @@ def analyze_ticker(symbol, period, interval, swing_order):
         "date_t2": date_t2,
         "recommended_dte": recommended_dte,
         "expiry_date": expiry_date,
-        "rr_ratio": rr_ratio
+        "rr_ratio": rr_ratio,
+        "greeks": greeks
     }
 
-# إنشاء التبويبات الرئيسية (أضفنا تبويب ثالث لسجل الأداء)
+# إنشاء التبويبات الرئيسية
 tab1, tab2, tab3 = st.tabs([
     "📊 التحليل التفصيلي وبطاقة الصفقة", 
     "🔍 الماسح الآلي للأسهم والمؤشرات (Screener)",
@@ -327,12 +419,13 @@ tab1, tab2, tab3 = st.tabs([
 ])
 
 with tab1:
-    res = analyze_ticker(ticker, period, interval, swing_order)
+    res = analyze_ticker(ticker, period, interval, swing_order, trade_style)
     
     if res is None:
         st.error("تعذر جلب البيانات الكافية لهذا المؤشر حالياً.")
     else:
         df = res["df"]
+        greeks = res["greeks"]
         badge_class = "badge-bull" if res["is_bullish"] else "badge-bear"
         
         # --- شريط الحالة الحي العلوي (Live Status Banner) ---
@@ -368,14 +461,72 @@ with tab1:
             "انتهاء الصلاحية المقترح": f"{res['expiry_date']} ({res['recommended_dte']} يوم)"
         }])
         st.dataframe(setup_df, use_container_width=True, hide_index=True)
+
+        # ==============================================================================
+        # إضافة الإصدار v2.1: حاسبة اليونانيات التقديرية + الشرح الحي لسبب التقييم
+        # ==============================================================================
+        st.markdown(f'<div class="rtl-box"><h3 style="margin-top:22px;">🧬 هندسة اليونانيات التقديرية للعقد (Greeks Risk Profile)</h3></div>', unsafe_allow_html=True)
         
-        # زر سريع لإضافة هذا العقد إلى سجل التتبع مباشرة
+        abs_delta = abs(greeks['delta'])
+        theta_per_contract = abs(greeks['theta_daily']) * 100  # قيمة التآكل اليومي للعقد الكامل (100 سهم)
+        gamma_val = greeks['gamma']
+        
+        # تقييم جودة اليونانيات آلياً
+        if 0.40 <= abs_delta <= 0.65:
+            delta_eval = "مثالية ومتوازنة ✅"
+        elif abs_delta > 0.65:
+            delta_eval = "عالية الأمان (ITM) 🛡️"
+        else:
+            delta_eval = "هجومية (OTM) ⚡"
+            
+        if theta_per_contract <= 15:
+            theta_eval = "تآكل بطيء وآمن 🟢"
+        elif theta_per_contract <= 35:
+            theta_eval = "تآكل متوسط 🟡"
+        else:
+            theta_eval = "تآكل مرتفع (احذر الانتظار) 🔴"
+            
+        if gamma_val >= 0.02:
+            gamma_eval = "تسارع انفجاري عالي 🚀"
+        elif gamma_val >= 0.008:
+            gamma_eval = "تسارع جيد ومستقر 📈"
+        else:
+            gamma_eval = "تسارع بطيء (سهم ثقيل) 🐢"
+
+        g1, g2, g3, g4 = st.columns(4)
+        g1.metric("الدلتا (Delta Δ)", f"{greeks['delta']:.2f}", delta_eval)
+        g2.metric("الثيتا اليومية (Theta Θ)", f"-${theta_per_contract:.2f} / يوم", theta_eval)
+        g3.metric("الجاما (Gamma Γ)", f"{gamma_val:.4f}", gamma_eval)
+        g4.metric("التقلب المقدر (Vol)", f"{greeks['iv_pct']:.1f}%", f"صلاحية آمنة: {res['recommended_dte']} يوم")
+
+        # --- الشرح الحي والمباشر لسبب تقييم اليونانيات (Educational & Analytical Breakdown) ---
+        direction_word = "ارتفاع" if res["is_bullish"] else "انخفاض"
+        st.markdown(f"""
+        <div class="greeks-explain-box">
+            <h4 style="color: #A78BFA; margin-top: 0; margin-bottom: 10px;">💡 لماذا تم تقييم يونانيات عقد {ticker} (${res['strike_rec']}) بهذا الشكل؟ (شرح مبسط)</h4>
+            <ul style="margin-bottom: 0; padding-right: 20px; color: #E2E8F0;">
+                <li style="margin-bottom: 8px;">
+                    <strong>1. تحليل الدلتا ({greeks['delta']:.2f} — {delta_eval}):</strong> 
+                    هذا الرقم يعني أنه مقابل كل <strong>$1.00</strong> يتحركه سهم <strong>{ticker}</strong> في اتجاه {direction_word}، سيزيد سعر العقد الواحد بمقدار <strong>${abs_delta * 100:.0f}</strong> تقريباً (أي ${abs_delta:.2f} للسهم). كما يعكس هذا الرقم أن احتمالية انتهاء العقد في المنطقة الرابحة تبلغ نحو <strong>{abs_delta * 100:.0f}%</strong>.
+                </li>
+                <li style="margin-bottom: 8px;">
+                    <strong>2. تحليل الثيتا (-${theta_per_contract:.2f} يومياً — {theta_eval}):</strong> 
+                    الثيتا هي "إيجار الوقت". هذا الرقم يخبرك أن عقدك سيفقد حوالي <strong>${theta_per_contract:.2f}</strong> من قيمته مع مرور كل يوم إذا بقي السهم ثابتاً مكانه. ولأن الأداة اختارت لك تاريخ صلاحية بعيد نسبياً (<strong>{res['recommended_dte']} يوم</strong>)، فقد نجحنا في إبعاد العقد عن منطقة التآكل القاتل، مما يمنحك نفساً طويلاً للمراقبة دون ذعر.
+                </li>
+                <li>
+                    <strong>3. تحليل الجاما ({gamma_val:.4f} — {gamma_eval}):</strong> 
+                    الجاما هي "تيربو التسارع". إذا تحرك السهم بقوة نحو الهدف الأول (<strong>${res['target_1']:.2f}</strong>)، فإن الجاما ستقوم بزيادة الدلتا تلقائياً بمقدار <strong>{gamma_val:.4f}</strong> مع كل دولار يتحركه السهم، مما يجعل أرباح العقد تتضاعف بشكل متسارع وليس خطياً.
+                </li>
+            </ul>
+        </div>
+        """, unsafe_allow_html=True)
+        
         if st.button(f"📌 إضافة عقد {ticker} الحالي إلى سجل تتبع الأداء"):
             opt_short = "PUT" if "PUT" in res["option_type"] else "CALL"
             log_new_trade(ticker, opt_short, res["strike_rec"], float(res["current_price"]))
             st.success(f"تمت إضافة عقد {ticker} بنجاح إلى جدول سجل التتبع في التبويب الثالث!")
 
-        st.markdown('<div class="rtl-box"><p style="color:#94A3B8; font-size:0.88rem;">⚠️ <strong>تنويه احترافي:</strong> مستويات امتداد فيبوناتشي (1.272 و 1.618) والتواريخ التقديرية هي <strong>أهداف حسابية ومناطق احتمالات مبنية على سلوك الموجات السابقة وليست توقعات مضمونة</strong>. الالتزام بوقف الخسارة وإدارة رأس المال هو أساس البقاء في السوق.</p></div>', unsafe_allow_html=True)
+        st.markdown('<div class="rtl-box"><p style="color:#94A3B8; font-size:0.88rem;">⚠️ <strong>تنويه احترافي:</strong> مستويات امتداد فيبوناتشي (1.272 و 1.618)، التواريخ التقديرية، وحسابات اليونانيات (المبنية على نموذج Black-Scholes والتقلب التاريخي) هي <strong>تقديرات رياضية واحتمالات وليست ضمانات مؤكدة</strong>. الالتزام بوقف الخسارة وإدارة رأس المال هو أساس البقاء في السوق.</p></div>', unsafe_allow_html=True)
 
         # --- الرسم البياني التفاعلي المتناسق مع خلفية التصميم المتوازن ---
         fig = make_subplots(rows=2, cols=1, shared_xaxes=True, vertical_spacing=0.05, row_heights=[0.75, 0.25])
@@ -429,8 +580,8 @@ with tab1:
 with tab2:
     st.markdown("""
     <div class="rtl-box">
-        <h3>🔍 الماسح الآلي للفرص السوينقية (Multi-Ticker Screener)</h3>
-        <p style="color:#94A3B8;">يفحص الماسح قائمة من أبرز المؤشرات والأسهم القيادية لحظياً لتحديد نوع العقد المناسب (Call / Put) والأهداف السعرية والزمنية المحتملة.</p>
+        <h3>🔍 الماسح الآلي للفرص السوينقية واليونانيات (Multi-Ticker Screener)</h3>
+        <p style="color:#94A3B8;">يفحص الماسح قائمة من أبرز المؤشرات والأسهم القيادية لحظياً لتحديد نوع العقد المناسب (Call / Put)، الأهداف السعرية، وقيم الدلتا والثيتا.</p>
     </div>
     """, unsafe_allow_html=True)
     
@@ -444,8 +595,9 @@ with tab2:
         screener_rows = []
         progress_bar = st.progress(0)
         for idx, sym in enumerate(watchlist):
-            data_res = analyze_ticker(sym, period, interval, swing_order)
+            data_res = analyze_ticker(sym, period, interval, swing_order, trade_style)
             if data_res:
+                g_data = data_res["greeks"]
                 status = "✅ فرصة قوية (R:R >= 2)" if data_res["rr_ratio"] >= 2.0 else "⏳ مراقبة (R:R < 2)"
                 screener_rows.append({
                     "الرمز": sym,
@@ -453,12 +605,13 @@ with tab2:
                     "الاتجاه": data_res["trend"],
                     "نوع العقد": data_res["option_type"],
                     "Strike مقترح": f"${data_res['strike_rec']}",
+                    "Delta Δ": f"{g_data['delta']:.2f}",
+                    "Theta اليومية": f"-${abs(g_data['theta_daily'])*100:.1f}",
                     "هدف 1 (1.272)": f"${data_res['target_1']:.2f}",
                     "تاريخ الوصول T1": data_res["date_t1"],
                     "هدف 2 (1.618)": f"${data_res['target_2']:.2f}",
-                    "تاريخ الوصول T2": data_res["date_t2"],
                     "وقف الخسارة": f"${data_res['stop_loss']:.2f}",
-                    "صلاحية العقد (DTE)": f"{data_res['recommended_dte']} يوم",
+                    "صلاحية (DTE)": f"{data_res['recommended_dte']} يوم",
                     "RSI": f"{data_res['current_rsi']:.1f}",
                     "C/R (R:R)": f"1 : {data_res['rr_ratio']:.2f}",
                     "التقييم": status
@@ -477,7 +630,7 @@ with tab2:
 
             styled_df = screener_df.style.apply(highlight_contract, axis=1)
             st.dataframe(styled_df, use_container_width=True, hide_index=True)
-            st.markdown('<div class="rtl-box"><p style="color:#94A3B8; font-size:0.88rem;">⚠️ تذكير: الأهداف السعرية والتواريخ الموضحة في الجدول تمثل مناطق احتمالية رياضية بناءً على امتدادات فيبوناتشي وسرعة الموجات السابقة، وليست ضماناً لحركة السعر.</p></div>', unsafe_allow_html=True)
+            st.markdown('<div class="rtl-box"><p style="color:#94A3B8; font-size:0.88rem;">⚠️ تذكير: الأهداف السعرية والتواريخ واليونانيات الموضحة في الجدول تمثل مناطق احتمالية وتقديرات رياضية، وليست ضماناً لحركة السعر.</p></div>', unsafe_allow_html=True)
         else:
             st.warning("لم يتم العثور على بيانات كافية للقائمة المحددة.")
 
@@ -542,38 +695,40 @@ with tab3:
                 st.rerun()
 
 # --- قسم التوثيق ومنهجية عمل الأداة ---
-with st.expander("📖 منهجية التحليل والمعايير الفنية المعتمدة في الأداة (8 ركائز أساسية)"):
+with st.expander("📖 منهجية التحليل والمعايير الفنية المعتمدة في الأداة (9 ركائز أساسية)"):
     st.markdown("""
     <div class="rtl-box">
-    تعتمد هذه الأداة على منظومة متكاملة من التحليل الفني، حساب هيكل السوق (Market Structure)، ودمج نسب فيبوناتشي لفحص وتحديد مستويات صفقات السوينق:
+    تعتمد هذه الأداة في إصدارها **v2.1** على منظومة متكاملة تجمع بين التحليل الفني الهيكلي، نسب فيبوناتشي، وهندسة تسعير الخيارات (Black-Scholes Greeks):
 
     ### 1. جلب البيانات والتحقّق الفوري (Live Data & Fetching)
-    * تعتمد الأداة على جلب بيانات الأسعار التاريخية والحية (الشموع اليابانية لـ Open, High, Low, Close) عبر واجهة البيانات المالية (`yfinance`).
-    * تتيح لك الأداة اختيار الإطار الزمني المناسب (سواء اليومي `1d` أو الساعي `1h`) لتحديد ما إذا كنت تريد سوينق قصير أو متوسط المدى.
+    * تعتمد الأداة على جلب بيانات الأسعار التاريخية والحية عبر واجهة (`yfinance`) مع إمكانية التبديل بين الإطار اليومي `1d` والساعي `1h`.
 
     ### 2. المتوسطات المتحركة وفلتر الاتجاه (EMA Filters)
-    * تحسب الأداة **المتوسط المتحرك الأسي لـ 20 يوماً (EMA 20)** و **50 يوماً (EMA 50)**.
-    * **فلتر الاتجاه:** تعتمد الأداة على مقارنة السعر الحالي بـ `EMA 50` لتحديد اتجاه السوق العام (صاعد 🟢 أو هابط 🔴)، وهو المعيار الأساسي لعدم السباحة عكس تيار السوق (*Trend is your friend*).
+    * مقارنة السعر الحالي مع **EMA 50** لتحديد الاتجاه العام (صاعد 🟢 أو هابط 🔴).
 
     ### 3. اكتشاف القمم والقيعان المحورية آلياً (Swing Pivots & Wave Structure)
-    * بدلاً من الرسم اليدوي، تستخدم الأداة خوارزميات رياضية متقدمة (`argrelextrema` من مكتبة `SciPy`) لرصد **القمم والقيعان المحورية (Swing Highs & Lows)** في التاريخ السعري.
+    * استخدام خوارزمية (`argrelextrema`) لرصد القمم والقيعان المحورية وتحديد طول الموجة بدقة رياضية.
 
     ### 4. حساب مناطق الأهداف السعرية ونسب امتداد فيبوناتشي (Fibonacci Extensions)
-    * بناءً على قياس طول الموجة السابقة، تطبق الأداة معادلات **امتداد فيبوناتشي** لتقدير مناطق جني الأرباح المحتملة:
-      * **منطقة الهدف الأول (T1):** عند امتداد نسبة **1.272** من الموجة.
-      * **منطقة الهدف الثاني (T2 / الموجة الثالثة المحتملة):** عند امتداد نسبة **1.618**.
-      * *(ملاحظة: هذه المستويات تمثل أهدافاً حسابية محتملة وليست توقعات مضمونة)*.
+    * إسقاط مستويات **1.272 (الهدف الأول T1)** و **1.618 (الهدف الثاني T2)** كمناطق احتمالات سعرية.
 
     ### 5. تقدير الوقت المتوقع والتاريخ الدقيق (Time Projections & DTE)
-    * تحسب الأداة عدد الشموع التي استغرقتها الموجة السابقة وتسقطها زمنياً مع استبعاد عطلات نهاية الأسبوع لإعطاء **تاريخ وصول تقديري** للهدفين، مع إضافة **21 يوماً كهامش أمان** لاختيار تاريخ انتهاء عقد الأوبشن (`DTE`).
+    * إسقاط عدد شموع الموجة السابقة زمنياً مع استبعاد عطلات نهاية الأسبوع وإضافة **21 يوماً كهامش أمان** لحماية العقد من التآكل الزمني.
 
-    ### 6. إدارة المخاطر وحساب متوسط المدى الحقيقي (ATR & Position Sizing)
+    ### 6. هندسة اليونانيات وتقييم العقود (Delta, Gamma, Theta) — جديد في v2.1
+    * حساب التقلب التاريخي السنوي للسهم وتطبيقه في معادلة **Black-Scholes** لتقدير:
+      * **الدلتا (Delta Δ):** لقياس حساسية العقد مقابل كل دولار يتحركه السهم واحتمالية الربح.
+      * **الثيتا (Theta Θ):** لحساب تكلفة مرور الوقت اليومية بالدولار على العقد الواحد.
+      * **الجاما (Gamma Γ):** لقياس تسارع الأرباح عند انطلاق السهم بقوة نحو الأهداف.
+    * مع تقديم **شرح حي ومباشر** أسفل كل تقييم ليفهم المتداول سبب اختيار العقد وتكلفة الانتظار.
+
+    ### 7. إدارة المخاطر وحساب متوسط المدى الحقيقي (ATR & Position Sizing)
     * تحديد وقف خسارة ديناميكي باستخدام مؤشر `ATR` وحساب حجم الصفقة ونسبة العائد للمخاطرة (`R:R`).
 
-    ### 7. عزم الزخم (RSI Momentum)
+    ### 8. عزم الزخم (RSI Momentum)
     * دمج مؤشر القوة النسبية `RSI (14)` لقياس تشبع السعر وقوة الزخم.
 
-    ### 8. العرض البصري والماسح الآلي (Plotly & Multi-Ticker Screener)
-    * شارت تفاعلي بهوية بصرية متوازنة ونظيفة مع بطاقة تنفيذية تحدد نوع العقد (`CALL` أو `PUT`) وسعر التنفيذ (`Strike`)، بالإضافة إلى ماسح آلي يفحص عدة أسهم ومؤشرات دفعة واحدة.
+    ### 9. الماسح الآلي وسجل تتبع الأداء (Screener & Trade Journal)
+    * فحص عدة أسهم ومؤشرات دفعة واحدة مع عرض قيم الدلتا والثيتا، وتوثيق الصفقات في سجل تفاعلي لقياس الأداء الفعلي.
     </div>
     """, unsafe_allow_html=True)
