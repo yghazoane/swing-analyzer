@@ -1,7 +1,7 @@
 """
 ================================================================================
 اسم الأداة: محلل العقود والسوينق الاحترافي (Pro Options & Swing Analyzer)
-الإصدار: v2.3.7
+الإصدار: v2.3.8
 الوصف: تحليل هيكلي للأسهم والمؤشرات (بما فيها SPX 500)، تحديد الأهداف بفيبوناتشي
        و ATR، تسعير العقود وحساب اليونانيات، وإدارة حجم العقود مع فلتر ذكي
        للبحث التلقائي عن العقود الرخيصة (< $3.00) حتى على مؤشر SPX.
@@ -21,7 +21,7 @@ import os
 
 # إعدادات الصفحة
 st.set_page_config(
-    page_title="محلل العقود والسوينق الاحترافي v2.3.7",
+    page_title="محلل العقود والسوينق الاحترافي v2.3.8",
     layout="wide",
     initial_sidebar_state="expanded"
 )
@@ -31,10 +31,17 @@ st.markdown(
     """
     <style>
     @import url('https://fonts.googleapis.com/css2?family=Cairo:wght@400;600;700;800&display=swap');
-    html, body, [class*="css"], .stMarkdown, p, h1, h2, h3, h4, label, button {
+    html, body, [class*="css"], .stMarkdown, p, h1, h2, h3, h4, label, button, [data-testid="stMetric"], [data-testid="stAlert"] {
         font-family: 'Cairo', sans-serif !important;
+        direction: rtl !important;
+        text-align: right !important;
+        unicode-bidi: plaintext;
     }
-    .rtl-box { direction: rtl; text-align: right; }
+    [data-testid="stMetricValue"], [data-testid="stMetricDelta"] {
+        direction: rtl !important;
+        text-align: right !important;
+        unicode-bidi: isolate;
+    }
     </style>
     """,
     unsafe_allow_html=True
@@ -242,7 +249,7 @@ def fetch_live_option_hint(symbol, target_dte, is_call, target_strike, budget_mo
 
 def analyze_ticker(symbol, interval, swing_order, pricing_strategy, trading_mode, max_contract_price=3.0):
     try:
-        period_map = {"15m": "1mo", "1h": "3mo", "1d": "1y"}
+        period_map = {"5m": "5d", "15m": "1mo", "1h": "3mo", "1d": "1y"}
         period = period_map.get(interval, "1y")
         df, err_msg = fetch_price_history(symbol, period, interval)
         if df is None or df.empty or len(df) < 30:
@@ -282,7 +289,7 @@ def analyze_ticker(symbol, interval, swing_order, pricing_strategy, trading_mode
 
         # التقلب التاريخي السنوي (HV)
         log_returns = np.log(df['Close'] / df['Close'].shift(1))
-        bars_per_year = {"15m": 252 * 26, "1h": 252 * 6.5, "1d": 252}.get(interval, 252)
+        bars_per_year = {"5m": 252 * 78, "15m": 252 * 26, "1h": 252 * 6.5, "1d": 252}.get(interval, 252)
         est_vol = float(log_returns.rolling(20).std().iloc[-1] * np.sqrt(bars_per_year))
         if np.isnan(est_vol) or est_vol <= 0.05:
             est_vol = 0.25
@@ -325,6 +332,35 @@ def analyze_ticker(symbol, interval, swing_order, pricing_strategy, trading_mode
         if is_squeeze:
             score += 1
 
+        # فحص تأكيد الكسر (حقيقي أم وهمي) بناءً على إغلاق الشمعة الأخيرة والزخم
+        bb_up_val = float(df['BB_Upper'].iloc[-1]) if not np.isnan(df['BB_Upper'].iloc[-1]) else current_price
+        bb_low_val = float(df['BB_Lower'].iloc[-1]) if not np.isnan(df['BB_Lower'].iloc[-1]) else current_price
+        recent_res = float(last_highs['Swing_High'].iloc[-1]) if len(last_highs) >= 1 else bb_up_val
+        recent_sup = float(last_lows['Swing_Low'].iloc[-1]) if len(last_lows) >= 1 else bb_low_val
+
+        # التحقق من حجم التداول (إن وجد)
+        vol_ok = True
+        if 'Volume' in df.columns and df['Volume'].sum() > 0:
+            avg_vol = float(df['Volume'].rolling(20, min_periods=5).mean().iloc[-1])
+            curr_vol = float(df['Volume'].iloc[-1])
+            if avg_vol > 0:
+                vol_ok = curr_vol >= (avg_vol * 0.95)
+
+        if is_bullish:
+            broke_level = (current_price > recent_res) or (current_price > bb_up_val)
+            momentum_ok = (macd_val > macd_sig) and (current_price > ema20_val)
+        else:
+            broke_level = (current_price < recent_sup) or (current_price < bb_low_val)
+            momentum_ok = (macd_val < macd_sig) and (current_price < ema20_val)
+
+        if broke_level and momentum_ok and vol_ok:
+            breakout_status = f"كسر حقيقي مؤكد بإغلاق ({interval}) 🟢"
+            score = min(5, score + 1)
+        elif broke_level and (not momentum_ok or not vol_ok):
+            breakout_status = f"تحذير: كسر وهمي محتمل على ({interval}) ⚠️"
+        else:
+            breakout_status = f"داخل النطاق - بانتظار إغلاق ({interval}) ⏳" 
+
         # حساب الأهداف الهيكلية بفيبوناتشي ووقف الخسارة بـ ATR
         if len(last_highs) >= 1 and len(last_lows) >= 1:
             rec_high = float(last_highs['Swing_High'].iloc[-1])
@@ -354,10 +390,10 @@ def analyze_ticker(symbol, interval, swing_order, pricing_strategy, trading_mode
                 stop_loss = current_price + current_atr * 1.0
 
         # تحديد الصلاحية الزمنية (DTE) حسب أسلوب المضاربة
-        if "يومي" in trading_mode or interval in ["15m", "1h"]:
-            est_days_t1 = 1 if interval == "15m" else 2
-            est_days_t2 = 3 if interval == "15m" else 5
-            recommended_dte = 3 if interval == "15m" else 7
+        if "يومي" in trading_mode or interval in ["5m", "15m", "1h"]:
+            est_days_t1 = 1 if interval in ["5m", "15m"] else 2
+            est_days_t2 = 2 if interval == "5m" else (3 if interval == "15m" else 5)
+            recommended_dte = 1 if interval == "5m" else (3 if interval == "15m" else 7)
         else:
             est_days_t1 = max(3, int(wave_bars * 0.8))
             est_days_t2 = max(6, int(wave_bars * 1.3))
@@ -368,7 +404,7 @@ def analyze_ticker(symbol, interval, swing_order, pricing_strategy, trading_mode
         # هندسة السترايك الذكية
         if is_budget_mode:
             # للعقود الرخيصة نستخدم صلاحية قصيرة (1-5 أيام) ونبحث عن السترايك الذي يحقق السعر المستهدف
-            recommended_dte = 2 if interval == "15m" else 5
+            recommended_dte = 1 if interval == "5m" else (2 if interval == "15m" else 5)
             strike_rec = find_budget_strike(
                 S=current_price,
                 T_days=recommended_dte,
@@ -442,21 +478,22 @@ def analyze_ticker(symbol, interval, swing_order, pricing_strategy, trading_mode
             "live_opt": live_opt,
             "score": score,
             "macd_status": "إيجابي 🟢" if macd_val > macd_sig else "سلبي 🔴",
-            "bb_status": "انفجار وشيك ⚡ (Squeeze)" if is_squeeze else "نطاق طبيعي 📊"
+            "bb_status": "انفجار وشيك ⚡ (Squeeze)" if is_squeeze else "نطاق طبيعي 📊",
+            "breakout_status": breakout_status
         }, ""
     except Exception as e:
         return None, str(e)
 
 
 # --- واجهة المستخدم ---
-st.title("📈 محلل العقود والسوينق الاحترافي (v2.3.7)")
+st.title("📈 محلل العقود والسوينق الاحترافي (v2.3.8)")
 st.markdown("منصة تحليلية مصممة بعقلية مضارب العقود: محرك بحث ذكي لإيجاد العقود الرخيصة (< $3.00) حتى على مؤشر SPX.")
 
 # القائمة الجانبية
 st.sidebar.header("⚙️ إعدادات التداول")
 trading_mode = st.sidebar.radio("أسلوب المضاربة:", ["مضاربة يومية / قصيرة (Intraday | 1-7 DTE)", "سوينق (Swing | 21-45 DTE)"])
-default_tf_idx = 1 if "يومية" in trading_mode else 2
-interval = st.sidebar.selectbox("الإطار الزمني:", ["15m", "1h", "1d"], index=default_tf_idx)
+default_tf_idx = 0 if "يومية" in trading_mode else 3
+interval = st.sidebar.selectbox("الإطار الزمني:", ["5m", "15m", "1h", "1d"], index=default_tf_idx)
 ticker = st.sidebar.selectbox("الأصل المالي:", ["SPX", "SPY", "QQQ", "IWM", "NVDA", "AAPL", "TSLA", "MSFT", "AMZN", "META", "AMD", "GOOGL", "NFLX"])
 swing_order = st.sidebar.slider("حساسية القمم والقيعان:", min_value=3, max_value=15, value=7)
 
@@ -502,8 +539,12 @@ with tab1:
         live_opt = res["live_opt"]
 
         st.info(
-            f"**الأصل:** {ticker} ({interval})  |  **الاتجاه:** {res['trend']}  |  "
-            f"**تقييم التوافق:** {res['score']}/5 ⭐  |  **MACD:** {res['macd_status']}  |  **البولنجر:** {res['bb_status']}"
+            f"**الأصل:** {ticker} ({interval}) &nbsp;|&nbsp; "
+            f"**الاتجاه:** {res['trend']} &nbsp;|&nbsp; "
+            f"**حالة الكسر:** {res['breakout_status']} &nbsp;|&nbsp; "
+            f"**التوافق:** {res['score']} من 5 ⭐ &nbsp;|&nbsp; "
+            f"**الزخم (MACD):** {res['macd_status']} &nbsp;|&nbsp; "
+            f"**البولنجر:** {res['bb_status']}"
         )
 
         c1, c2, c3, c4 = st.columns(4)
@@ -529,10 +570,10 @@ with tab1:
         st.markdown("### 🎯 بطاقة العقد المقترح واليونانيات")
         g1, g2, g3, g4, g5 = st.columns(5)
 
-        premium_badge = f"🟢 ضمن الميزانية (<${max_contract_price:.1f})" if est_premium <= max_contract_price else "⚠️ أعلى من السقف"
+        premium_badge = f"ضمن الميزانية (أقل من ${max_contract_price:.1f}) 🟢" if est_premium <= max_contract_price else "أعلى من السقف السعري ⚠️"
 
-        g1.metric("نوع العقد والسترايك", f"{res['option_type'].split()[0]} ${res['strike_rec']}", f"DTE: (ينتهي بعد {res['recommended_dte']} أيام في: {res['expiry_str']})")
-        g2.metric("سعر العقد التقديري", f"${est_premium:.2f}", f"${contract_cost:.0f}/عقد ({premium_badge})")
+        g1.metric("نوع العقد والسترايك", f"{res['option_type'].split()[0]} ${res['strike_rec']}", f"ينتهي بعد {res['recommended_dte']} أيام • {res['expiry_str']}")
+        g2.metric("سعر العقد التقديري", f"${est_premium:.2f}", f"التكلفة ${contract_cost:.0f} • {premium_badge}")
         g3.metric("الدلتا (Delta Δ)", f"{g['delta']:.2f}", f"الجاما: {g['gamma']:.4f}")
         g4.metric("الثيتا (Theta Θ)", f"-${abs(g['theta_daily'])*100:.2f}/يوم", f"IV: {g['iv_pct']:.1f}%")
         g5.metric("حجم الصفقة المقترح", f"{suggested_contracts} عقد", f"مخاطرة: ${max_risk_dollars:.0f}")
