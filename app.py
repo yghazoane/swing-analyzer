@@ -1,7 +1,7 @@
 """
 ================================================================================
 اسم الأداة: محلل العقود والسوينق الاحترافي (Pro Options & Swing Analyzer)
-الإصدار: v2.3.8
+الإصدار: v2.3.9
 الوصف: تحليل هيكلي للأسهم والمؤشرات (بما فيها SPX 500)، تحديد الأهداف بفيبوناتشي
        و ATR، تسعير العقود وحساب اليونانيات، وإدارة حجم العقود مع فلتر ذكي
        للبحث التلقائي عن العقود الرخيصة (< $3.00) حتى على مؤشر SPX.
@@ -21,7 +21,7 @@ import os
 
 # إعدادات الصفحة
 st.set_page_config(
-    page_title="محلل العقود والسوينق الاحترافي v2.3.8",
+    page_title="محلل العقود والسوينق الاحترافي v2.3.9",
     layout="wide",
     initial_sidebar_state="expanded"
 )
@@ -80,6 +80,26 @@ def log_new_trade(ticker, style, opt_type, strike, expiry, premium, stop_u, targ
     }])
     df = pd.concat([df, new_entry], ignore_index=True)
     df.to_csv(LOG_FILE, index=False)
+
+
+def get_next_valid_option_expiry(base_dt, target_dte, symbol):
+    """تحديد أقرب تاريخ انتهاء تداول حقيقي (تجنب عطلة نهاية الأسبوع السبت والأحد)"""
+    today_dt = datetime.now()
+    ref_dt = max(base_dt, today_dt)
+    target_date = (ref_dt + timedelta(days=target_dte)).date()
+
+    # مؤشرات والأسهم ذات الصلاحيات اليومية (SPY, QQQ, IWM, SPX): أيام التداول الإثنين-الجمعة
+    daily_exp_symbols = {"SPX", "SPY", "QQQ", "IWM"}
+    if symbol in daily_exp_symbols:
+        while target_date.weekday() >= 5:  # 5 = السبت, 6 = الأحد
+            target_date += timedelta(days=1)
+    else:
+        # باقي الأسهم: عقود أسبوعية تنتهي يوم الجمعة (weekday == 4)
+        while target_date.weekday() != 4:
+            target_date += timedelta(days=1)
+
+    actual_dte = max(1, (target_date - today_dt.date()).days)
+    return target_date.strftime("%Y-%m-%d"), actual_dte
 
 
 def add_trading_days(start_date, trading_days):
@@ -198,8 +218,11 @@ def fetch_live_option_hint(symbol, target_dte, is_call, target_strike, budget_mo
         if not expirations:
             return None
         today = datetime.now().date()
+        valid_exps = [e for e in expirations if datetime.strptime(e, "%Y-%m-%d").date() > today]
+        if not valid_exps:
+            valid_exps = list(expirations)
         best_exp = min(
-            expirations,
+            valid_exps,
             key=lambda x: abs((datetime.strptime(x, "%Y-%m-%d").date() - today).days - target_dte)
         )
         chain = tk.option_chain(best_exp)
@@ -451,9 +474,23 @@ def analyze_ticker(symbol, interval, swing_order, pricing_strategy, trading_mode
         last_dt = df.index[-1].to_pydatetime() if hasattr(df.index[-1], 'to_pydatetime') else datetime.now()
         if getattr(last_dt, "tzinfo", None) is not None:
             last_dt = last_dt.replace(tzinfo=None)
-        date_t1 = add_trading_days(last_dt, est_days_t1).strftime("%Y-%m-%d")
-        date_t2 = add_trading_days(last_dt, est_days_t2).strftime("%Y-%m-%d")
-        expiry_str = (last_dt + timedelta(days=recommended_dte)).strftime("%Y-%m-%d")
+        ref_base_dt = max(last_dt, datetime.now())
+        date_t1 = add_trading_days(ref_base_dt, est_days_t1).strftime("%Y-%m-%d")
+        date_t2 = add_trading_days(ref_base_dt, est_days_t2).strftime("%Y-%m-%d")
+
+        today_date = datetime.now().date()
+        if live_opt and live_opt.get("expiry"):
+            live_exp_date = datetime.strptime(live_opt["expiry"], "%Y-%m-%d").date()
+            if live_exp_date > today_date and live_exp_date.weekday() < 5:
+                expiry_str = live_opt["expiry"]
+                recommended_dte = max(1, (live_exp_date - today_date).days)
+            else:
+                expiry_str, recommended_dte = get_next_valid_option_expiry(last_dt, recommended_dte, symbol)
+        else:
+            expiry_str, recommended_dte = get_next_valid_option_expiry(last_dt, recommended_dte, symbol)
+
+        is_weekend = today_date.weekday() >= 5
+        market_note = "السوق مغلق حالياً (عطلة نهاية الأسبوع) • تم ضبط الانتهاء لأقرب جلسة قادمة" if is_weekend else "جلسة التداول نشطة / محدثة" 
 
         return {
             "df": df,
@@ -479,14 +516,15 @@ def analyze_ticker(symbol, interval, swing_order, pricing_strategy, trading_mode
             "score": score,
             "macd_status": "إيجابي 🟢" if macd_val > macd_sig else "سلبي 🔴",
             "bb_status": "انفجار وشيك ⚡ (Squeeze)" if is_squeeze else "نطاق طبيعي 📊",
-            "breakout_status": breakout_status
+            "breakout_status": breakout_status,
+            "market_note": market_note
         }, ""
     except Exception as e:
         return None, str(e)
 
 
 # --- واجهة المستخدم ---
-st.title("📈 محلل العقود والسوينق الاحترافي (v2.3.8)")
+st.title("📈 محلل العقود والسوينق الاحترافي (v2.3.9)")
 st.markdown("منصة تحليلية مصممة بعقلية مضارب العقود: محرك بحث ذكي لإيجاد العقود الرخيصة (< $3.00) حتى على مؤشر SPX.")
 
 # القائمة الجانبية
@@ -546,6 +584,8 @@ with tab1:
             f"**الزخم (MACD):** {res['macd_status']} &nbsp;|&nbsp; "
             f"**البولنجر:** {res['bb_status']}"
         )
+        if "مغلق" in res.get("market_note", ""):
+            st.warning(f"🕒 **تنبيه توقيت السوق:** {res['market_note']} ({res['expiry_str']}).")
 
         c1, c2, c3, c4 = st.columns(4)
         c1.metric("السعر الحالي", f"${res['current_price']:.2f}", f"ATR: ${res['current_atr']:.2f}")
@@ -572,7 +612,8 @@ with tab1:
 
         premium_badge = f"ضمن الميزانية (أقل من ${max_contract_price:.1f}) 🟢" if est_premium <= max_contract_price else "أعلى من السقف السعري ⚠️"
 
-        g1.metric("نوع العقد والسترايك", f"{res['option_type'].split()[0]} ${res['strike_rec']}", f"ينتهي بعد {res['recommended_dte']} أيام • {res['expiry_str']}")
+        day_word = "يوم" if res['recommended_dte'] in [1, 2] or res['recommended_dte'] > 10 else "أيام"
+        g1.metric("نوع العقد والسترايك", f"{res['option_type'].split()[0]} ${res['strike_rec']}", f"ينتهي بعد {res['recommended_dte']} {day_word} • {res['expiry_str']}")
         g2.metric("سعر العقد التقديري", f"${est_premium:.2f}", f"التكلفة ${contract_cost:.0f} • {premium_badge}")
         g3.metric("الدلتا (Delta Δ)", f"{g['delta']:.2f}", f"الجاما: {g['gamma']:.4f}")
         g4.metric("الثيتا (Theta Θ)", f"-${abs(g['theta_daily'])*100:.2f}/يوم", f"IV: {g['iv_pct']:.1f}%")
