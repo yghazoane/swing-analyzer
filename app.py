@@ -1,9 +1,7 @@
 """
 ================================================================================
 اسم الأداة: محلل العقود والسوينق الاحترافي (Pro Options & Swing Analyzer)
-الإصدار: v2.3.1
-الوصف: تحليل هيكلي للأسهم والمؤشرات، تحديد الأهداف بفيبوناتشي و ATR، تسعير العقود
-       وحساب اليونانيات (Black-Scholes + سحب السلسلة الحية)، وإدارة حجم العقود.
+الإصدار: v2.3.2 (إضافة مؤشر SPX 500 ودعم تتبع الأصول بدقة)
 ================================================================================
 """
 
@@ -20,7 +18,7 @@ import os
 
 # إعدادات الصفحة
 st.set_page_config(
-    page_title="محلل العقود والسوينق الاحترافي v2.3.1",
+    page_title="محلل العقود والسوينق الاحترافي v2.3.2",
     layout="wide",
     initial_sidebar_state="expanded"
 )
@@ -131,12 +129,14 @@ def calculate_bs_metrics(S, K, T_days, r, sigma, is_call=True):
 
 @st.cache_data(ttl=600)
 def fetch_price_history(symbol, period, interval):
-    """جلب البيانات التاريخية مع آلية احتياطية لتجنب حظر أو فشل الاتصال"""
+    """جلب البيانات التاريخية مع آلية احتياطية وتوافق مع رمز مؤشر SPX (^GSPC)"""
     try:
-        tk = yf.Ticker(symbol)
+        # مؤشر SPX في ياهو فاينانس يُرمز له بـ ^GSPC
+        query_symbol = "^GSPC" if symbol == "SPX" else symbol
+        tk = yf.Ticker(query_symbol)
         df = tk.history(period=period, interval=interval, auto_adjust=False)
         if df is None or df.empty:
-            df = yf.download(symbol, period=period, interval=interval, progress=False)
+            df = yf.download(query_symbol, period=period, interval=interval, progress=False)
         if isinstance(df.columns, pd.MultiIndex):
             df.columns = df.columns.get_level_values(0)
         if df is not None and not df.empty:
@@ -149,9 +149,10 @@ def fetch_price_history(symbol, period, interval):
 
 @st.cache_data(ttl=600)
 def fetch_live_option_hint(symbol, target_dte, is_call, target_strike):
-    """جلب أقرب عقد حقيقي من سلسلة الأوبشن الحية كمرجع إضافي"""
+    """جلب أقرب عقد حقيقي من سلسلة الأوبشن الحية (يدعم SPY و SPX عبر ^GSPC)"""
     try:
-        tk = yf.Ticker(symbol)
+        query_symbol = "^GSPC" if symbol == "SPX" else symbol
+        tk = yf.Ticker(query_symbol)
         expirations = tk.options
         if not expirations:
             return None
@@ -371,7 +372,7 @@ def analyze_ticker(symbol, interval, swing_order, delta_mode, trading_mode):
 
 
 # --- واجهة المستخدم ---
-st.title("📈 محلل العقود والسوينق الاحترافي (v2.3.1)")
+st.title("📈 محلل العقود والسوينق الاحترافي (v2.3.2)")
 st.markdown("منصة تحليلية مصممة بعقلية مضارب العقود: دمج الهيكل السعري، ATR، فيبوناتشي، اليونانيات، وإدارة المخاطر لكل عقد.")
 
 # القائمة الجانبية
@@ -379,7 +380,9 @@ st.sidebar.header("⚙️ إعدادات التداول")
 trading_mode = st.sidebar.radio("أسلوب المضاربة:", ["سوينق (Swing | 21-45 DTE)", "مضاربة يومية / قصيرة (Intraday | 7-14 DTE)"])
 default_tf_idx = 2 if "سوينق" in trading_mode else 1
 interval = st.sidebar.selectbox("الإطار الزمني:", ["15m", "1h", "1d"], index=default_tf_idx)
-ticker = st.sidebar.selectbox("الأصل المالي:", ["SPY", "QQQ", "IWM", "NVDA", "AAPL", "TSLA", "MSFT", "AMZN", "META", "AMD", "GOOGL", "NFLX"])
+
+# إضافة SPX بجانب SPY وبقية الأصول
+ticker = st.sidebar.selectbox("الأصل المالي:", ["SPX", "SPY", "QQQ", "IWM", "NVDA", "AAPL", "TSLA", "MSFT", "AMZN", "META", "AMD", "GOOGL", "NFLX"])
 swing_order = st.sidebar.slider("حساسية القمم والقيعان:", min_value=3, max_value=15, value=7)
 
 if st.sidebar.button("🔄 تحديث البيانات ومسح الكاش"):
@@ -488,8 +491,8 @@ with tab2:
     st.subheader("🔍 الماسح الآلي للفرص (المضاربة اليومية والسوينق)")
     watchlist = st.multiselect(
         "اختر قائمة الأسهم والمؤشرات للفحص:",
-        ["SPY", "QQQ", "IWM", "NVDA", "AAPL", "TSLA", "MSFT", "AMZN", "META", "AMD", "GOOGL", "NFLX"],
-        default=["SPY", "QQQ", "IWM", "NVDA", "AAPL", "TSLA", "META"]
+        ["SPX", "SPY", "QQQ", "IWM", "NVDA", "AAPL", "TSLA", "MSFT", "AMZN", "META", "AMD"],
+        default=["SPX", "SPY", "QQQ", "NVDA", "AAPL", "TSLA", "META"]
     )
     if st.button("🚀 بدء الفحص الشامل", type="primary"):
         rows = []
