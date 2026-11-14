@@ -1,7 +1,7 @@
 """
 ================================================================================
-اسم الأداة: محلل السوينق والموجات الاحترافي مع حاسبة اليونانيات وسجل التتبع
-الإصدار: v2.1.0
+اسم الأداة: محلل السوينق والموجات الاحترافي مع مؤشرات MACD والبولنجر (Swing & Wave Analyzer)
+الإصدار: v2.2.0
 تاريخ التحديث: 2026-11-14
 ================================================================================
 """
@@ -18,7 +18,7 @@ from datetime import datetime, timedelta
 import os
 
 # إعدادات الصفحة الأساسية
-st.set_page_config(page_title="محلل السوينق والموجات الاحترافي v2.1", layout="wide", initial_sidebar_state="expanded")
+st.set_page_config(page_title="محلل السوينق والموجات الاحترافي v2.2", layout="wide", initial_sidebar_state="expanded")
 
 # --- حزمة التصميم البصري: الخيار الثالث (متوازن ونظيف Balanced & Clean) + دعم RTL وخط Cairo ---
 st.markdown("""
@@ -120,7 +120,7 @@ html, body, [class*="css"], .stMarkdown, .stText, p, h1, h2, h3, h4, label, butt
     font-weight: 700;
 }
 
-/* بطاقة شرح اليونانيات الديناميكية */
+/* بطاقة شرح اليونانيات والمؤشرات الديناميكية */
 .greeks-explain-box {
     background: linear-gradient(145deg, #192030, #141926);
     border: 1px solid #2D3748;
@@ -209,13 +209,13 @@ def log_new_trade(ticker, opt_type, strike, alert_price):
 # --- ترويسة الصفحة ---
 st.markdown("""
 <div class="rtl-box">
-    <h1 style="margin-bottom: 4px; color: #F8FAFC; font-weight: 800;">📈 محلل السوينق والموجات الاحترافي (الإصدار v2.1)</h1>
-    <p style="color: #94A3B8; font-size: 1.05rem; margin-bottom: 18px;">منصة تحليلية متكاملة لهيكل السوق، الموجات السعرية، هندسة اليونانيات (Delta / Gamma / Theta)، وسجل تتبع الأداء.</p>
+    <h1 style="margin-bottom: 4px; color: #F8FAFC; font-weight: 800;">📈 محلل السوينق والموجات الاحترافي (الإصدار v2.2 - مع MACD و Bollinger)</h1>
+    <p style="color: #94A3B8; font-size: 1.05rem; margin-bottom: 18px;">منصة تحليلية متكاملة لهيكل السوق، الموجات، مؤشرات الزخم والتقلب (MACD / Bollinger)، هندسة اليونانيات، وسجل تتبع الأداء.</p>
 </div>
 """, unsafe_allow_html=True)
 
 # --- القائمة الجانبية (المدخلات والتحكم الحي) ---
-st.sidebar.markdown('<div class="rtl-box"><h3>⚙️ إعدادات التحليل والتحكم (v2.1)</h3></div>', unsafe_allow_html=True)
+st.sidebar.markdown('<div class="rtl-box"><h3>⚙️ إعدادات التحليل والتحكم (v2.2)</h3></div>', unsafe_allow_html=True)
 ticker = st.sidebar.selectbox("اختر المؤشر / السهم:", ["SPY", "QQQ", "IWM", "NVDA", "AAPL", "TSLA", "MSFT", "AMZN", "META"])
 interval = st.sidebar.selectbox("الإطار الزمني (Timeframe):", ["1d", "1h"], index=0)
 period = "1y" if interval == "1d" else "3mo"
@@ -247,15 +247,8 @@ def add_trading_days(start_date, trading_days):
 
 # --- دالة حساب اليونانيات التقديرية عبر نموذج بلاك-شولز (Black-Scholes Greeks) ---
 def calculate_bs_greeks(S, K, T_days, r, sigma, is_call=True):
-    """
-    S: السعر الحالي للسهم
-    K: سعر التنفيذ (Strike)
-    T_days: الأيام المتبقية لانتهاء العقد (DTE)
-    r: معدل الفائدة الخالي من المخاطرة (مثلاً 0.045)
-    sigma: التقلب السنوي المقدر (Historical/Implied Volatility)
-    """
     T = max(T_days / 365.0, 1e-5)
-    sigma = max(sigma, 0.10)  # حد أدنى منطقي للتقلب 10%
+    sigma = max(sigma, 0.10)
     
     d1 = (np.log(S / K) + (r + 0.5 * sigma ** 2) * T) / (sigma * np.sqrt(T))
     d2 = d1 - sigma * np.sqrt(T)
@@ -270,7 +263,7 @@ def calculate_bs_greeks(S, K, T_days, r, sigma, is_call=True):
                         + r * K * np.exp(-r * T) * norm.cdf(-d2))
         
     gamma = norm.pdf(d1) / (S * sigma * np.sqrt(T))
-    theta_daily = theta_annual / 365.0  # التآكل اليومي بالدولار لكل سهم (يُضرب في 100 للعقد الواحد)
+    theta_daily = theta_annual / 365.0
     
     return {
         "delta": delta,
@@ -279,7 +272,7 @@ def calculate_bs_greeks(S, K, T_days, r, sigma, is_call=True):
         "iv_pct": sigma * 100
     }
 
-# --- دالة التحليل المتكاملة لأي سهم أو مؤشر ---
+# --- دالة التحليل المتكاملة لأي سهم أو مؤشر (مع MACD و Bollinger Bands) ---
 @st.cache_data(ttl=300)
 def analyze_ticker(symbol, period, interval, swing_order, style_choice):
     df = yf.download(symbol, period=period, interval=interval, progress=False)
@@ -290,15 +283,32 @@ def analyze_ticker(symbol, period, interval, swing_order, style_choice):
     if df.empty or len(df) < 50:
         return None
     
+    # المتوسطات المتحركة
     df['EMA20'] = df['Close'].ewm(span=20, adjust=False).mean()
     df['EMA50'] = df['Close'].ewm(span=50, adjust=False).mean()
     
-    delta = df['Close'].diff()
-    gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
-    loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
+    # مؤشر RSI
+    delta_s = df['Close'].diff()
+    gain = (delta_s.where(delta_s > 0, 0)).rolling(window=14).mean()
+    loss = (-delta_s.where(delta_s < 0, 0)).rolling(window=14).mean()
     rs = gain / loss
     df['RSI'] = 100 - (100 / (1 + rs))
     
+    # مؤشر MACD (12, 26, 9)
+    exp1 = df['Close'].ewm(span=12, adjust=False).mean()
+    exp2 = df['Close'].ewm(span=26, adjust=False).mean()
+    df['MACD'] = exp1 - exp2
+    df['MACD_Signal'] = df['MACD'].ewm(span=9, adjust=False).mean()
+    df['MACD_Hist'] = df['MACD'] - df['MACD_Signal']
+    
+    # مؤشر Bollinger Bands (20, 2)
+    df['BB_Middle'] = df['Close'].rolling(window=20).mean()
+    bb_std = df['Close'].rolling(window=20).std()
+    df['BB_Upper'] = df['BB_Middle'] + (bb_std * 2)
+    df['BB_Lower'] = df['BB_Middle'] - (bb_std * 2)
+    df['BB_Width'] = (df['BB_Upper'] - df['BB_Lower']) / df['BB_Middle']
+    
+    # ATR
     high_low = df['High'] - df['Low']
     high_close = np.abs(df['High'] - df['Close'].shift())
     low_close = np.abs(df['Low'] - df['Close'].shift())
@@ -306,7 +316,7 @@ def analyze_ticker(symbol, period, interval, swing_order, style_choice):
     true_range = np.max(ranges, axis=1)
     df['ATR'] = true_range.rolling(14).mean()
     
-    # حساب التقلب التاريخي السنوي (Annualized Volatility) لتقدير اليونانيات بدقة
+    # حساب التقلب التاريخي السنوي
     log_returns = np.log(df['Close'] / df['Close'].shift(1))
     annual_factor = 252 if interval == "1d" else (252 * 6.5)
     est_volatility = float(log_returns.rolling(20).std().iloc[-1] * np.sqrt(annual_factor))
@@ -323,6 +333,10 @@ def analyze_ticker(symbol, period, interval, swing_order, style_choice):
     current_atr = float(df['ATR'].iloc[-1])
     ema50_val = float(df['EMA50'].iloc[-1])
     current_rsi = float(df['RSI'].iloc[-1])
+    macd_val = float(df['MACD'].iloc[-1])
+    macd_sig = float(df['MACD_Signal'].iloc[-1])
+    bb_width_val = float(df['BB_Width'].iloc[-1])
+    
     last_date = df.index[-1]
     if hasattr(last_date, 'to_pydatetime'):
         last_date = last_date.to_pydatetime()
@@ -330,6 +344,19 @@ def analyze_ticker(symbol, period, interval, swing_order, style_choice):
     is_bullish = current_price > ema50_val
     trend = "صاعد (Bullish) 🟢" if is_bullish else "هابط (Bearish) 🔴"
     option_type = "CALL 🟢 (شراء)" if is_bullish else "PUT 🔴 (بيع)"
+    
+    # تقييم MACD
+    if macd_val > macd_sig:
+        macd_status = "إيجابي / زخم صاعد 🟢"
+    else:
+        macd_status = "سلبي / زخم هابط 🔴"
+        
+    # تقييم Bollinger Bands (هل هناك انكماش Squeeze ينذر بانفجار سعري؟)
+    bb_width_mean = float(df['BB_Width'].rolling(50).mean().iloc[-1])
+    if not np.isnan(bb_width_mean) and bb_width_val < bb_width_mean * 0.8:
+        bb_status = "انكماش حاد (Squeeze) ⚡ - توقع انفجار سعري قريب!"
+    else:
+        bb_status = "وضع اعتيادي (استقرار نسبي) 📊"
     
     if len(last_highs) >= 2 and len(last_lows) >= 2:
         recent_high_price = float(last_highs['Swing_High'].iloc[-1])
@@ -364,7 +391,7 @@ def analyze_ticker(symbol, period, interval, swing_order, style_choice):
         stop_loss = current_price * 0.98 if is_bullish else current_price * 1.02
         est_days_t1, est_days_t2, recommended_dte = 5, 10, 35
 
-    # اختيار سعر التنفيذ (Strike) بناءً على نمط الدلتا المختار
+    # اختيار سعر التنفيذ (Strike) بناءً على نمط الدلتا
     if "OTM" in style_choice:
         strike_rec = round(current_price + current_atr * 0.75) if is_bullish else round(current_price - current_atr * 0.75)
     elif "ITM" in style_choice:
@@ -372,7 +399,7 @@ def analyze_ticker(symbol, period, interval, swing_order, style_choice):
     else:
         strike_rec = round(current_price)
 
-    # حساب اليونانيات للعقد المقترح
+    # حساب اليونانيات
     greeks = calculate_bs_greeks(
         S=current_price,
         K=strike_rec,
@@ -394,6 +421,8 @@ def analyze_ticker(symbol, period, interval, swing_order, style_choice):
         "current_price": current_price,
         "current_atr": current_atr,
         "current_rsi": current_rsi,
+        "macd_status": macd_status,
+        "bb_status": bb_status,
         "is_bullish": is_bullish,
         "trend": trend,
         "option_type": option_type,
@@ -433,8 +462,9 @@ with tab1:
         <div class="live-banner">
             <div class="banner-item">📌 الأصل المفحوص: <strong style="color:#38BDF8; font-size:1.1rem;">{ticker}</strong> ({interval})</div>
             <div class="banner-item">🧭 الاتجاه العام: <span class="{badge_class}">{res['trend']}</span></div>
-            <div class="banner-item">⚡ مؤشر الزخم RSI: <strong>{res['current_rsi']:.1f}</strong></div>
-            <div class="banner-item">⚖️ العائد للمخاطرة: <strong style="color:#FBBF24;">1 : {res['rr_ratio']:.2f}</strong></div>
+            <div class="banner-item">⚡ RSI: <strong>{res['current_rsi']:.1f}</strong></div>
+            <div class="banner-item">📊 MACD: <strong>{res['macd_status']}</strong></div>
+            <div class="banner-item">⚖️ R:R: <strong style="color:#FBBF24;">1 : {res['rr_ratio']:.2f}</strong></div>
         </div>
         """, unsafe_allow_html=True)
         
@@ -463,15 +493,14 @@ with tab1:
         st.dataframe(setup_df, use_container_width=True, hide_index=True)
 
         # ==============================================================================
-        # إضافة الإصدار v2.1: حاسبة اليونانيات التقديرية + الشرح الحي لسبب التقييم
+        # هندسة اليونانيات وتقييم المخاطر (مع تحديث لون شارة الثيتا العكسي)
         # ==============================================================================
         st.markdown(f'<div class="rtl-box"><h3 style="margin-top:22px;">🧬 هندسة اليونانيات التقديرية للعقد (Greeks Risk Profile)</h3></div>', unsafe_allow_html=True)
         
         abs_delta = abs(greeks['delta'])
-        theta_per_contract = abs(greeks['theta_daily']) * 100  # قيمة التآكل اليومي للعقد الكامل (100 سهم)
+        theta_per_contract = abs(greeks['theta_daily']) * 100
         gamma_val = greeks['gamma']
         
-        # تقييم جودة اليونانيات آلياً
         if 0.40 <= abs_delta <= 0.65:
             delta_eval = "مثالية ومتوازنة ✅"
         elif abs_delta > 0.65:
@@ -484,7 +513,7 @@ with tab1:
         elif theta_per_contract <= 35:
             theta_eval = "تآكل متوسط 🟡"
         else:
-            theta_eval = "تآكل مرتفع (احذر الانتظار) 🔴"
+            theta_eval = "تآكل مرتفع 🔴"
             
         if gamma_val >= 0.02:
             gamma_eval = "تسارع انفجاري عالي 🚀"
@@ -495,27 +524,31 @@ with tab1:
 
         g1, g2, g3, g4 = st.columns(4)
         g1.metric("الدلتا (Delta Δ)", f"{greeks['delta']:.2f}", delta_eval)
-        g2.metric("الثيتا اليومية (Theta Θ)", f"-${theta_per_contract:.2f} / يوم", theta_eval)
+        g2.metric("الثيتا اليومية (Theta Θ)", f"-${theta_per_contract:.2f} / يوم", theta_eval, delta_color="inverse")
         g3.metric("الجاما (Gamma Γ)", f"{gamma_val:.4f}", gamma_eval)
         g4.metric("التقلب المقدر (Vol)", f"{greeks['iv_pct']:.1f}%", f"صلاحية آمنة: {res['recommended_dte']} يوم")
 
-        # --- الشرح الحي والمباشر لسبب تقييم اليونانيات (Educational & Analytical Breakdown) ---
+        # --- الشرح التحليلي الشامل (الموجات + اليونانيات + MACD + Bollinger) ---
         direction_word = "ارتفاع" if res["is_bullish"] else "انخفاض"
         st.markdown(f"""
         <div class="greeks-explain-box">
-            <h4 style="color: #A78BFA; margin-top: 0; margin-bottom: 10px;">💡 لماذا تم تقييم يونانيات عقد {ticker} (${res['strike_rec']}) بهذا الشكل؟ (شرح مبسط)</h4>
+            <h4 style="color: #A78BFA; margin-top: 0; margin-bottom: 10px;">💡 التحليل الفني الشامل لـ {ticker} (اليونانيات + الزخم MACD + النطاق Bollinger)</h4>
             <ul style="margin-bottom: 0; padding-right: 20px; color: #E2E8F0;">
                 <li style="margin-bottom: 8px;">
-                    <strong>1. تحليل الدلتا ({greeks['delta']:.2f} — {delta_eval}):</strong> 
-                    هذا الرقم يعني أنه مقابل كل <strong>$1.00</strong> يتحركه سهم <strong>{ticker}</strong> في اتجاه {direction_word}، سيزيد سعر العقد الواحد بمقدار <strong>${abs_delta * 100:.0f}</strong> تقريباً (أي ${abs_delta:.2f} للسهم). كما يعكس هذا الرقم أن احتمالية انتهاء العقد في المنطقة الرابحة تبلغ نحو <strong>{abs_delta * 100:.0f}%</strong>.
+                    <strong>1. تحليل الزخم (MACD: {res['macd_status']}):</strong> 
+                    مؤشر MACD يؤكد حالة الزخم الحالية؛ توافق إشارة MACD مع اتجاه الموجة يعزز من موثوقية الهدف السعري الأول (${res['target_1']:.2f}).
                 </li>
                 <li style="margin-bottom: 8px;">
-                    <strong>2. تحليل الثيتا (-${theta_per_contract:.2f} يومياً — {theta_eval}):</strong> 
-                    الثيتا هي "إيجار الوقت". هذا الرقم يخبرك أن عقدك سيفقد حوالي <strong>${theta_per_contract:.2f}</strong> من قيمته مع مرور كل يوم إذا بقي السهم ثابتاً مكانه. ولأن الأداة اختارت لك تاريخ صلاحية بعيد نسبياً (<strong>{res['recommended_dte']} يوم</strong>)، فقد نجحنا في إبعاد العقد عن منطقة التآكل القاتل، مما يمنحك نفساً طويلاً للمراقبة دون ذعر.
+                    <strong>2. قياس التقلب وانكماش النطاق (Bollinger Bands: {res['bb_status']}):</strong> 
+                    مؤشر Bollinger Bands يراقب عرض القناة السعرية؛ إذا ظهر انكماش (Squeeze)، فهذا ينذر بانفجار حاد في حركة السعر قريباً لصالح كسر الموجة.
+                </li>
+                <li style="margin-bottom: 8px;">
+                    <strong>3. حساسية العقد (الدلتا {greeks['delta']:.2f}):</strong> 
+                    العقد يربح نحو <strong>${abs_delta * 100:.0f}</strong> تقريباً مقابل كل <strong>$1.00</strong> يتحركه السهم في اتجاه {direction_word}.
                 </li>
                 <li>
-                    <strong>3. تحليل الجاما ({gamma_val:.4f} — {gamma_eval}):</strong> 
-                    الجاما هي "تيربو التسارع". إذا تحرك السهم بقوة نحو الهدف الأول (<strong>${res['target_1']:.2f}</strong>)، فإن الجاما ستقوم بزيادة الدلتا تلقائياً بمقدار <strong>{gamma_val:.4f}</strong> مع كل دولار يتحركه السهم، مما يجعل أرباح العقد تتضاعف بشكل متسارع وليس خطياً.
+                    <strong>4. التآكل الزمني (الثيتا -${theta_per_contract:.2f}/يوم) & التسارع (الجاما {gamma_val:.4f}):</strong> 
+                    تم اختيار صلاحية آمنة لمدة <strong>{res['recommended_dte']} يوم</strong> لتقليل تأثير الثيتا، بينما تضمن الجاما تسارع الأرباح بمجرد وصول السهم نحو الأهداف المرسومة.
                 </li>
             </ul>
         </div>
@@ -526,41 +559,64 @@ with tab1:
             log_new_trade(ticker, opt_short, res["strike_rec"], float(res["current_price"]))
             st.success(f"تمت إضافة عقد {ticker} بنجاح إلى جدول سجل التتبع في التبويب الثالث!")
 
-        st.markdown('<div class="rtl-box"><p style="color:#94A3B8; font-size:0.88rem;">⚠️ <strong>تنويه احترافي:</strong> مستويات امتداد فيبوناتشي (1.272 و 1.618)، التواريخ التقديرية، وحسابات اليونانيات (المبنية على نموذج Black-Scholes والتقلب التاريخي) هي <strong>تقديرات رياضية واحتمالات وليست ضمانات مؤكدة</strong>. الالتزام بوقف الخسارة وإدارة رأس المال هو أساس البقاء في السوق.</p></div>', unsafe_allow_html=True)
+        st.markdown('<div class="rtl-box"><p style="color:#94A3B8; font-size:0.88rem;">⚠️ <strong>تنويه احترافي:</strong> مستويات فيبوناتشي، التواريخ التقديرية، وحسابات اليونانيات ومؤشرات الزخم هي <strong>تقديرات رياضية واحتمالات</strong> وليست ضمانات مؤكدة.</p></div>', unsafe_allow_html=True)
 
-        # --- الرسم البياني التفاعلي المتناسق مع خلفية التصميم المتوازن ---
-        fig = make_subplots(rows=2, cols=1, shared_xaxes=True, vertical_spacing=0.05, row_heights=[0.75, 0.25])
+        # ==============================================================================
+        # الرسم البياني المتقدم (4 لوحات متصلة: الشموع + Bollinger, RSI, MACD, Volume)
+        # ==============================================================================
+        fig = make_subplots(
+            rows=4, cols=1, 
+            shared_xaxes=True, 
+            vertical_spacing=0.03, 
+            row_heights=[0.50, 0.18, 0.17, 0.15],
+            subplot_titles=(f"التحليل الهيكلي وموجات السوينق مع Bollinger Bands لـ {ticker}", "مؤشر الزخم RSI (14)", "مؤشر الزخم والتسارع MACD", "حجم التداول (Volume)")
+        )
 
+{"""        # الشموع اليابانية والمتوسطات و Bollinger Bands
         fig.add_trace(go.Candlestick(
             x=df.index, open=df['Open'], high=df['High'], low=df['Low'], close=df['Close'],
             name="السعر", increasing_line_color='#10B981', decreasing_line_color='#EF4444'
         ), row=1, col=1)
+        
+        fig.add_trace(go.Scatter(x=df.index, y=df['BB_Upper'], line=dict(color='rgba(56, 189, 248, 0.5)', width=1, dash='dash'), name="Bollinger Upper"), row=1, col=1)
+        fig.add_trace(go.Scatter(x=df.index, y=df['BB_Lower'], line=dict(color='rgba(56, 189, 248, 0.5)', width=1, dash='dash'), fill='tonexty', fillcolor='rgba(56, 189, 248, 0.04)', name="Bollinger Lower"), row=1, col=1)
+        fig.add_trace(go.Scatter(x=df.index, y=df['BB_Middle'], line=dict(color='rgba(56, 189, 248, 0.8)', width=1), name="BB Middle"), row=1, col=1)
+        
         fig.add_trace(go.Scatter(x=df.index, y=df['EMA20'], line=dict(color='#38BDF8', width=1.4), name="EMA 20"), row=1, col=1)
-        fig.add_trace(go.Scatter(x=df.index, y=df['EMA50'], line=dict(color='#F59E0B', width=1.8), name="EMA 50 (فلتر الاتجاه)"), row=1, col=1)
+        fig.add_trace(go.Scatter(x=df.index, y=df['EMA50'], line=dict(color='#F59E0B', width=1.8), name="EMA 50"), row=1, col=1)
 
-        fig.add_trace(go.Scatter(x=df.index, y=df['Swing_High'], mode='markers', marker=dict(color='#EF4444', size=9, symbol='triangle-down'), name="قمة موجة (Pivot High)"), row=1, col=1)
-        fig.add_trace(go.Scatter(x=df.index, y=df['Swing_Low'], mode='markers', marker=dict(color='#10B981', size=9, symbol='triangle-up'), name="قاع موجة (Pivot Low)"), row=1, col=1)
+        fig.add_trace(go.Scatter(x=df.index, y=df['Swing_High'], mode='markers', marker=dict(color='#EF4444', size=9, symbol='triangle-down'), name="قمة موجة"), row=1, col=1)
+        fig.add_trace(go.Scatter(x=df.index, y=df['Swing_Low'], mode='markers', marker=dict(color='#10B981', size=9, symbol='triangle-up'), name="قاع موجة"), row=1, col=1)
 
-        fig.add_hline(y=res['target_1'], line_dash="dash", line_color="#10B981", annotation_text=f"احتمال T1 (1.272): ${res['target_1']:.2f} | {res['date_t1']}", row=1, col=1)
-        fig.add_hline(y=res['target_2'], line_dash="dot", line_color="#34D399", annotation_text=f"احتمال T2 (1.618): ${res['target_2']:.2f} | {res['date_t2']}", row=1, col=1)
-        fig.add_hline(y=res['stop_loss'], line_dash="dash", line_color="#EF4444", annotation_text=f"وقف الخسارة (ATR): ${res['stop_loss']:.2f}", row=1, col=1)
+        fig.add_hline(y=res['target_1'], line_dash="dash", line_color="#10B981", annotation_text=f"هدف T1: ${res['target_1']:.2f}", row=1, col=1)
+        fig.add_hline(y=res['target_2'], line_dash="dot", line_color="#34D399", annotation_text=f"هدف T2: ${res['target_2']:.2f}", row=1, col=1)
+        fig.add_hline(y=res['stop_loss'], line_dash="dash", line_color="#EF4444", annotation_text=f"وقف الخسارة: ${res['stop_loss']:.2f}", row=1, col=1)
 
+        # لوحة RSI
         fig.add_trace(go.Scatter(x=df.index, y=df['RSI'], line=dict(color='#A78BFA', width=1.6), name="RSI (14)"), row=2, col=1)
         fig.add_hline(y=70, line_dash="dot", line_color="#64748B", row=2, col=1)
         fig.add_hline(y=30, line_dash="dot", line_color="#64748B", row=2, col=1)
 
+        # لوحة MACD
+        fig.add_trace(go.Scatter(x=df.index, y=df['MACD'], line=dict(color='#38BDF8', width=1.5), name="MACD Line"), row=3, col=1)
+        fig.add_trace(go.Scatter(x=df.index, y=df['MACD_Signal'], line=dict(color='#F59E0B', width=1.5), name="Signal Line"), row=3, col=1)
+        colors_hist = ['#10B981' if val >= 0 else '#EF4444' for val in df['MACD_Hist']]
+        fig.add_trace(go.Bar(x=df.index, y=df['MACD_Hist'], marker_color=colors_hist, name="MACD Histogram"), row=3, col=1)
+
+        # لوحة Volume
+        colors_vol = ['#10B981' if c >= o else '#EF4444' for c, o in zip(df['Close'], df['Open'])]
+        fig.add_trace(go.Bar(x=df.index, y=df['Volume'], marker_color=colors_vol, name="Volume"), row=4, col=1)
+
         fig.update_layout(
-            height=650,
+            height=900,
             xaxis_rangeslider_visible=False,
             paper_bgcolor="#131722",
             plot_bgcolor="#1A1F2E",
             font=dict(family="Cairo, sans-serif", color="#E2E8F0"),
-            title=dict(text=f"التحليل الهيكلي والموجي لـ {ticker}", x=0.98, xanchor="right"),
+            title=dict(text=f"التحليل الفني المتقدم والمتكامل لـ {ticker}", x=0.98, xanchor="right"),
             xaxis=dict(gridcolor="#2A3142"),
             yaxis=dict(gridcolor="#2A3142"),
-            xaxis2=dict(gridcolor="#2A3142"),
-            yaxis2=dict(gridcolor="#2A3142"),
-            legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="left", x=0)
+            legend=dict(orientation="h", yanchor="bottom", y=1.01, xanchor="left", x=0)
         )
         st.plotly_chart(fig, use_container_width=True)
 
@@ -580,8 +636,8 @@ with tab1:
 with tab2:
     st.markdown("""
     <div class="rtl-box">
-        <h3>🔍 الماسح الآلي للفرص السوينقية واليونانيات (Multi-Ticker Screener)</h3>
-        <p style="color:#94A3B8;">يفحص الماسح قائمة من أبرز المؤشرات والأسهم القيادية لحظياً لتحديد نوع العقد المناسب (Call / Put)، الأهداف السعرية، وقيم الدلتا والثيتا.</p>
+        <h3>🔍 الماسح الآلي للفرص السوينقية واليونانيات (Multi-Ticker Screener v2.2)</h3>
+        <p style="color:#94A3B8;">يفحص الماسح القائمة لحظياً، محللاً الموجات، مؤشرات الزخم MACD والبولنجر، بالإضافة إلى قيم الدلتا والثيتا للعقود.</p>
     </div>
     """, unsafe_allow_html=True)
     
@@ -607,12 +663,10 @@ with tab2:
                     "Strike مقترح": f"${data_res['strike_rec']}",
                     "Delta Δ": f"{g_data['delta']:.2f}",
                     "Theta اليومية": f"-${abs(g_data['theta_daily'])*100:.1f}",
+                    "MACD": data_res["macd_status"],
                     "هدف 1 (1.272)": f"${data_res['target_1']:.2f}",
-                    "تاريخ الوصول T1": data_res["date_t1"],
-                    "هدف 2 (1.618)": f"${data_res['target_2']:.2f}",
                     "وقف الخسارة": f"${data_res['stop_loss']:.2f}",
                     "صلاحية (DTE)": f"{data_res['recommended_dte']} يوم",
-                    "RSI": f"{data_res['current_rsi']:.1f}",
                     "C/R (R:R)": f"1 : {data_res['rr_ratio']:.2f}",
                     "التقييم": status
                 })
@@ -630,7 +684,7 @@ with tab2:
 
             styled_df = screener_df.style.apply(highlight_contract, axis=1)
             st.dataframe(styled_df, use_container_width=True, hide_index=True)
-            st.markdown('<div class="rtl-box"><p style="color:#94A3B8; font-size:0.88rem;">⚠️ تذكير: الأهداف السعرية والتواريخ واليونانيات الموضحة في الجدول تمثل مناطق احتمالية وتقديرات رياضية، وليست ضماناً لحركة السعر.</p></div>', unsafe_allow_html=True)
+            st.markdown('<div class="rtl-box"><p style="color:#94A3B8; font-size:0.88rem;">⚠️ تذكير: الأهداف السعرية واليونانيات ومؤشرات الزخم تمثل تقديرات رياضية.</p></div>', unsafe_allow_html=True)
         else:
             st.warning("لم يتم العثور على بيانات كافية للقائمة المحددة.")
 
@@ -638,7 +692,7 @@ with tab3:
     st.markdown("""
     <div class="rtl-box">
         <h3>📊 سجل تتبع الأداء والصفقات الحية (Trade Journal)</h3>
-        <p style="color:#94A3B8;">هذا الجدول مخصص لتوثيق العقود وتتبع أعلى سعر وصلت إليه (مثل عقد META الذي وصل إلى 20.20) لقياس كفاءة الأداة بدقة إحصائية.</p>
+        <p style="color:#94A3B8;">هذا الجدول مخصص لتوثيق العقود وتتبع أعلى سعر وصلت إليه لقياس كفاءة الأداة بدقة إحصائية.</p>
     </div>
     """, unsafe_allow_html=True)
     
@@ -651,7 +705,7 @@ with tab3:
                 (history_df["Max_Price_Reached"] - history_df["Alert_Price"]) / history_df["Alert_Price"] * 100
             ).round(2)
 
-        st.write("💡 **تلميح:** يمكنك تعديل خانة (أعلى سعر وصل له Max_Price_Reached) مباشرة من الجدول أدناه لتحديث أداء العقود:")
+        st.write("💡 **تلميح:** يمكنك تعديل خانة (أعلى سعر وصل له Max_Price_Reached) مباشرة من الجدول أدناه:")
         
         edited_df = st.data_editor(
             history_df, 
@@ -695,40 +749,27 @@ with tab3:
                 st.rerun()
 
 # --- قسم التوثيق ومنهجية عمل الأداة ---
-with st.expander("📖 منهجية التحليل والمعايير الفنية المعتمدة في الأداة (9 ركائز أساسية)"):
+with st.expander("📖 منهجية التحليل والمعايير الفنية المعتمدة في الأداة (11 ركيزة أساسية)"):
     st.markdown("""
     <div class="rtl-box">
-    تعتمد هذه الأداة في إصدارها **v2.1** على منظومة متكاملة تجمع بين التحليل الفني الهيكلي، نسب فيبوناتشي، وهندسة تسعير الخيارات (Black-Scholes Greeks):
+    تعتمد هذه الأداة في إصدارها **v2.2** على منظومة متكاملة تجمع بين التحليل الفني الهيكلي، نسب فيبوناتشي، هندسة اليونانيات (Black-Scholes)، ومؤشرات الزخم والتقلب المتقدمة:
 
-    ### 1. جلب البيانات والتحقّق الفوري (Live Data & Fetching)
-    * تعتمد الأداة على جلب بيانات الأسعار التاريخية والحية عبر واجهة (`yfinance`) مع إمكانية التبديل بين الإطار اليومي `1d` والساعي `1h`.
+    ### 1 الى 5. الهيكل الأساسي والموجات والزمن (EMA, Swings, Fibonacci, DTE)
+    * رصد الاتجاه بـ EMA 50، اكتشاف القمم والقيعان المحورية آلياً، حساب أهداف امتداد فيبوناتشي (1.272 و 1.618)، وتقدير تواريخ الصلاحية.
 
-    ### 2. المتوسطات المتحركة وفلتر الاتجاه (EMA Filters)
-    * مقارنة السعر الحالي مع **EMA 50** لتحديد الاتجاه العام (صاعد 🟢 أو هابط 🔴).
+    ### 6. هندسة اليونانيات وتقييم العقود (Delta, Gamma, Theta)
+    * تسعير اليونانيات عبر نموذج Black-Scholes مع تعديل لون شارة الثيتا العكسي وإبراز حساسية العقد والتآكل اليومي بالدولار.
 
-    ### 3. اكتشاف القمم والقيعان المحورية آلياً (Swing Pivots & Wave Structure)
-    * استخدام خوارزمية (`argrelextrema`) لرصد القمم والقيعان المحورية وتحديد طول الموجة بدقة رياضية.
+    ### 7. مؤشر الزخم MACD — جديد في v2.2
+    * تتبع تقاطعات خط الإشارة والـ Histogram لتأكيد قوة اتجاه الموجة ورصد أي دايفرجنس محتمل.
 
-    ### 4. حساب مناطق الأهداف السعرية ونسب امتداد فيبوناتشي (Fibonacci Extensions)
-    * إسقاط مستويات **1.272 (الهدف الأول T1)** و **1.618 (الهدف الثاني T2)** كمناطق احتمالات سعرية.
+    ### 8. نطاقات بولنجر Bollinger Bands — جديد في v2.2
+    * قياس التذبذب ورصد حالات انكماش النطاق (Squeeze) التي تسبق الانفجارات السعرية الكبرى.
 
-    ### 5. تقدير الوقت المتوقع والتاريخ الدقيق (Time Projections & DTE)
-    * إسقاط عدد شموع الموجة السابقة زمنياً مع استبعاد عطلات نهاية الأسبوع وإضافة **21 يوماً كهامش أمان** لحماية العقد من التآكل الزمني.
+    ### 9. عزم الزخم RSI (14)
+    * قياس تشبع الشراء والبيع لتأكيد توقيت الدخول.
 
-    ### 6. هندسة اليونانيات وتقييم العقود (Delta, Gamma, Theta) — جديد في v2.1
-    * حساب التقلب التاريخي السنوي للسهم وتطبيقه في معادلة **Black-Scholes** لتقدير:
-      * **الدلتا (Delta Δ):** لقياس حساسية العقد مقابل كل دولار يتحركه السهم واحتمالية الربح.
-      * **الثيتا (Theta Θ):** لحساب تكلفة مرور الوقت اليومية بالدولار على العقد الواحد.
-      * **الجاما (Gamma Γ):** لقياس تسارع الأرباح عند انطلاق السهم بقوة نحو الأهداف.
-    * مع تقديم **شرح حي ومباشر** أسفل كل تقييم ليفهم المتداول سبب اختيار العقد وتكلفة الانتظار.
-
-    ### 7. إدارة المخاطر وحساب متوسط المدى الحقيقي (ATR & Position Sizing)
-    * تحديد وقف خسارة ديناميكي باستخدام مؤشر `ATR` وحساب حجم الصفقة ونسبة العائد للمخاطرة (`R:R`).
-
-    ### 8. عزم الزخم (RSI Momentum)
-    * دمج مؤشر القوة النسبية `RSI (14)` لقياس تشبع السعر وقوة الزخم.
-
-    ### 9. الماسح الآلي وسجل تتبع الأداء (Screener & Trade Journal)
-    * فحص عدة أسهم ومؤشرات دفعة واحدة مع عرض قيم الدلتا والثيتا، وتوثيق الصفقات في سجل تفاعلي لقياس الأداء الفعلي.
+    ### 10 & 11. الماسح الآلي وسجل تتبع الأداء (Screener & Trade Journal)
+    * فحص القوائم لحظياً وتوثيق نتائج الصفقات والعقود في جدول الأداء.
     </div>
     """, unsafe_allow_html=True)
