@@ -1,7 +1,6 @@
 """
 ================================================================================
-اسم الأداة: محلل السوينق والموجات الاحترافي (Swing & Wave Analyzer)
-الإصدار: v2.2.8
+اسم الأداة: محلل السوينق والموجات الاحترافي مع مؤشرات الزخم واليونانيات (v2.2.9)
 تاريخ التحديث: 2026-11-14
 ================================================================================
 """
@@ -18,13 +17,16 @@ from datetime import datetime, timedelta
 import os
 
 # إعدادات الصفحة الأساسية
-st.set_page_config(page_title="محلل السوينق والموجات الاحترافي v2.2.8", layout="wide", initial_sidebar_state="expanded")
+st.set_page_config(page_title="محلل السوينق والموجات الاحترافي v2.2.9", layout="wide", initial_sidebar_state="expanded")
 
 LOG_FILE = "trade_history.csv"
 
 def init_trade_log():
     if not os.path.exists(LOG_FILE):
-        df = pd.DataFrame(columns=["Timestamp", "Ticker", "Option_Type", "Strike", "Alert_Price", "Max_Price_Reached", "Status", "Notes"])
+        df = pd.DataFrame(columns=[
+            "Timestamp", "Ticker", "Option_Type", "Strike", 
+            "Alert_Price", "Max_Price_Reached", "Status", "Notes"
+        ])
         df.to_csv(LOG_FILE, index=False)
 
 def log_new_trade(ticker, opt_type, strike, alert_price):
@@ -32,26 +34,30 @@ def log_new_trade(ticker, opt_type, strike, alert_price):
     df = pd.read_csv(LOG_FILE)
     new_entry = pd.DataFrame([{
         "Timestamp": datetime.now().strftime("%Y-%m-%d %H:%M"),
-        "Ticker": ticker, "Option_Type": opt_type, "Strike": strike,
-        "Alert_Price": alert_price, "Max_Price_Reached": alert_price,
-        "Status": "مفتوح للمراقبة ⏳", "Notes": "تنبيه من الماسح"
+        "Ticker": ticker,
+        "Option_Type": opt_type,
+        "Strike": strike,
+        "Alert_Price": alert_price,
+        "Max_Price_Reached": alert_price,
+        "Status": "مفتوح للمراقبة ⏳",
+        "Notes": "تنبيه من الماسح أو إدخال يدوي"
     }])
     df = pd.concat([df, new_entry], ignore_index=True)
     df.to_csv(LOG_FILE, index=False)
 
-st.title("📈 محلل السوينق والموجات الاحترافي (v2.2.8)")
+st.title("📈 محلل السوينق والموجات الاحترافي (v2.2.9)")
 st.markdown("منصة تحليلية متكاملة لهيكل السوق، الموجات، مؤشرات الزخم، هندسة اليونانيات، وسجل تتبع الأداء.")
 
 # --- القائمة الجانبية ---
 st.sidebar.header("إعدادات التحليل والتحكم")
-ticker = st.sidebar.selectbox("اختر المؤشر / السهم:", ["SPY", "QQQ", "IWM", "NVDA", "AAPL", "TSLA", "MSFT", "AMZN", "META"])
+ticker = st.sidebar.selectbox("اختر المؤشر / السهم:", ["SPY", "QQQ", "IWM", "NVDA", "AAPL", "TSLA", "MSFT", "AMZN", "META", "AMD", "GOOGL", "NFLX"])
 interval = st.sidebar.selectbox("الإطار الزمني:", ["1d", "1h"], index=0)
 period = "1y" if interval == "1d" else "3mo"
 swing_order = st.sidebar.slider("حساسية اكتشاف القمم والقيعان:", min_value=3, max_value=15, value=7)
 
 st.sidebar.markdown("---")
-st.sidebar.header("إعدادات العقود")
-trade_style = st.sidebar.selectbox("نمط اختيار العقد:", ["متوازن (ATM)", "هجومي (OTM)", "تحوطي (ITM)"], index=0)
+st.sidebar.header("إعدادات العقود واليونانيات")
+trade_style = st.sidebar.selectbox("نمط اختيار العقد:", ["متوازن (ATM | Delta ~0.50)", "هجومي (OTM | Delta ~0.35)", "تحوطي (ITM | Delta ~0.65)"], index=0)
 risk_pct = st.sidebar.number_input("نسبة المخاطرة (%):", min_value=0.5, max_value=5.0, value=1.0, step=0.5)
 portfolio_size = st.sidebar.number_input("حجم المحفظة ($):", min_value=1000, value=10000, step=1000)
 
@@ -69,9 +75,13 @@ def calculate_bs_greeks(S, K, T_days, r, sigma, is_call=True):
     sigma = max(sigma, 0.10)
     d1 = (np.log(S / K) + (r + 0.5 * sigma ** 2) * T) / (sigma * np.sqrt(T))
     d2 = d1 - sigma * np.sqrt(T)
-    delta = norm.cdf(d1) if is_call else norm.cdf(d1) - 1.0
+    if is_call:
+        delta = norm.cdf(d1)
+        theta_annual = (- (S * norm.pdf(d1) * sigma) / (2 * np.sqrt(T)) - r * K * np.exp(-r * T) * norm.cdf(d2))
+    else:
+        delta = norm.cdf(d1) - 1.0
+        theta_annual = (- (S * norm.pdf(d1) * sigma) / (2 * np.sqrt(T)) + r * K * np.exp(-r * T) * norm.cdf(-d2))
     gamma = norm.pdf(d1) / (S * sigma * np.sqrt(T))
-    theta_annual = (- (S * norm.pdf(d1) * sigma) / (2 * np.sqrt(T)))
     return {"delta": delta, "gamma": gamma, "theta_daily": theta_annual / 365.0, "iv_pct": sigma * 100}
 
 @st.cache_data(ttl=300)
@@ -132,12 +142,13 @@ def analyze_ticker(symbol, period, interval, swing_order, style_choice):
             "df": df, "current_price": current_price, "current_rsi": current_rsi,
             "trend": trend, "option_type": option_type, "strike_rec": strike_rec,
             "target_1": target_1, "target_2": target_2, "stop_loss": stop_loss,
-            "rr_ratio": rr_ratio, "greeks": greeks, "is_bullish": is_bullish
+            "rr_ratio": rr_ratio, "greeks": greeks, "is_bullish": is_bullish,
+            "macd_status": "إيجابي 🟢" if df['MACD'].iloc[-1] > df['MACD_Signal'].iloc[-1] else "سلبي 🔴"
         }
     except Exception as e:
         return None
 
-tab1, tab2, tab3 = st.tabs(["📊 التحليل التفصيلي", "🔍 الماسح الآلي", "📈 سجل الأداء"])
+tab1, tab2, tab3 = st.tabs(["📊 التحليل التفصيلي وبطاقة الصفقة", "🔍 الماسح الآلي المتقدم (Screener)", "📈 سجل تتبع الأداء (Trade Journal)"])
 
 with tab1:
     res = analyze_ticker(ticker, period, interval, swing_order, trade_style)
@@ -149,9 +160,17 @@ with tab1:
         
         c1, c2, c3, c4 = st.columns(4)
         c1.metric("السعر الحالي", f"${res['current_price']:.2f}")
-        c2.metric("الهدف الأول", f"${res['target_1']:.2f}")
+        c2.metric("الهدف الأول (1.272)", f"${res['target_1']:.2f}")
         c3.metric("وقف الخسارة", f"${res['stop_loss']:.2f}")
-        c4.metric("العائد للمخاطرة", f"1 : {res['rr_ratio']:.2f}")
+        c4.metric("العائد للمخاطرة (R:R)", f"1 : {res['rr_ratio']:.2f}")
+
+        # عرض تفاصيل اليونانيات
+        st.markdown("### 🧬 اليونانيات التقديرية للعقد")
+        g1, g2, g3, g4 = st.columns(4)
+        g1.metric("الدلتا (Delta Δ)", f"{greeks['delta']:.2f}")
+        g2.metric("الثيتا (Theta Θ)", f"-${abs(greeks['theta_daily'])*100:.2f} / يوم")
+        g3.metric("الجاما (Gamma Γ)", f"{greeks['gamma']:.4f}")
+        g4.metric("التقلب الضمني (IV)", f"{greeks['iv_pct']:.1f}%")
 
         if st.button("📌 إضافة عقد إلى سجل تتبع الأداء"):
             log_new_trade(ticker, "CALL" if res["is_bullish"] else "PUT", res["strike_rec"], res["current_price"])
@@ -165,26 +184,41 @@ with tab1:
         st.plotly_chart(fig, use_container_width=True)
 
 with tab2:
-    st.subheader("الماسح الآلي للفرص")
-    watchlist = st.multiselect("اختر الأسهم للفحص:", ["SPY", "QQQ", "NVDA", "AAPL", "TSLA"], default=["SPY", "QQQ"])
-    if st.button("🚀 بدء الفحص"):
+    st.subheader("🔍 الماسح الآلي المتقدم للأسهم والمؤشرات")
+    watchlist = st.multiselect("اختر الأسهم للفحص:", ["SPY", "QQQ", "IWM", "NVDA", "AAPL", "TSLA", "MSFT", "AMZN", "META"], default=["SPY", "QQQ", "NVDA"])
+    if st.button("🚀 بدء الفحص الشامل", type="primary"):
         rows = []
         for sym in watchlist:
             d = analyze_ticker(sym, period, interval, swing_order, trade_style)
             if d:
-                rows.append({"الرمز": sym, "السعر": f"${d['current_price']:.2f}", "الاتجاه": d['trend'], "العقد": d['option_type']})
+                g = d["greeks"]
+                rows.append({
+                    "الرمز": sym,
+                    "السعر الحالي": f"${d['current_price']:.2f}",
+                    "الاتجاه": d['trend'],
+                    "نوع العقد": d['option_type'],
+                    "Strike مقترح": f"${d['strike_rec']}",
+                    "Delta Δ": f"{g['delta']:.2f}",
+                    "Theta اليومية": f"-${abs(g['theta_daily'])*100:.1f}",
+                    "MACD": d['macd_status'],
+                    "الهدف الأول": f"${d['target_1']:.2f}",
+                    "وقف الخسارة": f"${d['stop_loss']:.2f}",
+                    "R:R": f"1 : {d['rr_ratio']:.2f}"
+                })
         if rows:
-            st.dataframe(pd.DataFrame(rows), use_container_width=True)
+            st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
 
 with tab3:
-    st.subheader("سجل تتبع الأداء")
+    st.subheader("📊 سجل تتبع الأداء والصفقات الحية")
     init_trade_log()
     history_df = pd.read_csv(LOG_FILE)
     if not history_df.empty:
-        edited_df = st.data_editor(history_df, use_container_width=True)
-        if st.button("💾 حفظ السجل"):
+        if "Alert_Price" in history_df.columns and "Max_Price_Reached" in history_df.columns:
+            history_df["Profit_%"] = ((history_df["Max_Price_Reached"] - history_df["Alert_Price"]) / history_df["Alert_Price"] * 100).round(2)
+        edited_df = st.data_editor(history_df, use_container_width=True, key="trade_log_editor")
+        if st.button("💾 حفظ التحديثات في السجل"):
             edited_df.to_csv(LOG_FILE, index=False)
-            st.success("تم الحفظ!")
+            st.success("تم الحفظ بنجاح!")
             st.rerun()
     else:
         st.info("لا توجد صفقات مسجلة حتى الآن.")
