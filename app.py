@@ -1,9 +1,7 @@
 """
 ================================================================================
 اسم الأداة: محلل العقود والسوينق الاحترافي (Pro Options & Swing Analyzer)
-الإصدار: v2.3.1
-الوصف: تحليل هيكلي للأسهم والمؤشرات، تحديد الأهداف بفيبوناتشي و ATR، تسعير العقود
-       وحساب اليونانيات (Black-Scholes + سحب السلسلة الحية)، وإدارة حجم العقود.
+الإصدار: v2.3.2 (إضافة مؤشر SPX 500 ودعم تتبع الأصول بدقة)
 ================================================================================
 """
 
@@ -20,7 +18,7 @@ import os
 
 # إعدادات الصفحة
 st.set_page_config(
-    page_title="محلل العقود والسوينق الاحترافي v2.3.1",
+    page_title="محلل العقود والسوينق الاحترافي v2.3.2",
     layout="wide",
     initial_sidebar_state="expanded"
 )
@@ -131,12 +129,14 @@ def calculate_bs_metrics(S, K, T_days, r, sigma, is_call=True):
 
 @st.cache_data(ttl=600)
 def fetch_price_history(symbol, period, interval):
-    """جلب البيانات التاريخية مع آلية احتياطية لتجنب حظر أو فشل الاتصال"""
+    """جلب البيانات التاريخية مع آلية احتياطية وتوافق مع رمز مؤشر SPX (^GSPC)"""
     try:
-        tk = yf.Ticker(symbol)
+        # مؤشر SPX في ياهو فاينانس يُرمز له بـ ^GSPC
+        query_symbol = "^GSPC" if symbol == "SPX" else symbol
+        tk = yf.Ticker(query_symbol)
         df = tk.history(period=period, interval=interval, auto_adjust=False)
         if df is None or df.empty:
-            df = yf.download(symbol, period=period, interval=interval, progress=False)
+            df = yf.download(query_symbol, period=period, interval=interval, progress=False)
         if isinstance(df.columns, pd.MultiIndex):
             df.columns = df.columns.get_level_values(0)
         if df is not None and not df.empty:
@@ -149,9 +149,10 @@ def fetch_price_history(symbol, period, interval):
 
 @st.cache_data(ttl=600)
 def fetch_live_option_hint(symbol, target_dte, is_call, target_strike):
-    """جلب أقرب عقد حقيقي من سلسلة الأوبشن الحية كمرجع إضافي"""
+    """جلب أقرب عقد حقيقي من سلسلة الأوبشن الحية (يدعم SPY و SPX عبر ^GSPC)"""
     try:
-        tk = yf.Ticker(symbol)
+        query_symbol = "^GSPC" if symbol == "SPX" else symbol
+        tk = yf.Ticker(query_symbol)
         expirations = tk.options
         if not expirations:
             return None
@@ -371,7 +372,7 @@ def analyze_ticker(symbol, interval, swing_order, delta_mode, trading_mode):
 
 
 # --- واجهة المستخدم ---
-st.title("📈 محلل العقود والسوينق الاحترافي (v2.3.1)")
+st.title("📈 محلل العقود والسوينق الاحترافي (v2.3.2)")
 st.markdown("منصة تحليلية مصممة بعقلية مضارب العقود: دمج الهيكل السعري، ATR، فيبوناتشي، اليونانيات، وإدارة المخاطر لكل عقد.")
 
 # القائمة الجانبية
@@ -379,168 +380,6 @@ st.sidebar.header("⚙️ إعدادات التداول")
 trading_mode = st.sidebar.radio("أسلوب المضاربة:", ["سوينق (Swing | 21-45 DTE)", "مضاربة يومية / قصيرة (Intraday | 7-14 DTE)"])
 default_tf_idx = 2 if "سوينق" in trading_mode else 1
 interval = st.sidebar.selectbox("الإطار الزمني:", ["15m", "1h", "1d"], index=default_tf_idx)
-ticker = st.sidebar.selectbox("الأصل المالي:", ["SPY", "QQQ", "IWM", "NVDA", "AAPL", "TSLA", "MSFT", "AMZN", "META", "AMD", "GOOGL", "NFLX"])
-swing_order = st.sidebar.slider("حساسية القمم والقيعان:", min_value=3, max_value=15, value=7)
 
-if st.sidebar.button("🔄 تحديث البيانات ومسح الكاش"):
-    st.cache_data.clear()
-    st.rerun()
-
-st.sidebar.markdown("---")
-st.sidebar.header("🎯 هندسة العقد والمخاطرة")
-delta_mode = st.sidebar.selectbox(
-    "اختيار السترايك (Delta):",
-    ["متوازن (ATM | Delta ~0.50)", "هجومي (OTM | Delta ~0.35)", "تحوطي (ITM | Delta ~0.65)"]
-)
-portfolio_size = st.sidebar.number_input("حجم المحفظة ($):", min_value=1000, value=10000, step=1000)
-risk_pct = st.sidebar.number_input("المخاطرة القصوى للصفقة (%):", min_value=0.5, max_value=5.0, value=1.5, step=0.5)
-contract_sl_pct = st.sidebar.slider("نسبة وقف خسارة العقد (% من القسط):", min_value=20, max_value=60, value=35, step=5)
-
-tab1, tab2, tab3 = st.tabs([
-    "📊 التحليل التفصيلي وبطاقة العقد",
-    "🔍 الماسح الآلي للفرص (Screener)",
-    "📈 سجل الصفقات والأداء (Journal)"
-])
-
-with tab1:
-    res, err_detail = analyze_ticker(ticker, interval, swing_order, delta_mode, trading_mode)
-    if res is None:
-        st.warning(f"⚠️ تعذر جلب بيانات كافية للرمز ({ticker}) على الإطار ({interval}).")
-        if err_detail:
-            st.caption(f"تفاصيل تقنية: {err_detail}")
-    else:
-        df = res["df"]
-        g = res["greeks"]
-        live_opt = res["live_opt"]
-
-        st.info(
-            f"**الأصل:** {ticker} ({interval})  |  **الاتجاه:** {res['trend']}  |  "
-            f"**تقييم التوافق:** {res['score']}/5 ⭐  |  **MACD:** {res['macd_status']}  |  **البولنجر:** {res['bb_status']}"
-        )
-
-        c1, c2, c3, c4 = st.columns(4)
-        c1.metric("السعر الحالي", f"${res['current_price']:.2f}", f"ATR: ${res['current_atr']:.2f}")
-        c2.metric("الهدف الأول (1.272)", f"${res['target_1']:.2f}", f"متوقع: {res['date_t1']}")
-        c3.metric("الهدف الثاني (1.618)", f"${res['target_2']:.2f}", f"متوقع: {res['date_t2']}")
-        c4.metric("وقف الخسارة (للسهم)", f"${res['stop_loss']:.2f}", f"R:R = 1 : {res['rr_ratio']:.2f}")
-
-        est_premium = live_opt["mid"] if (live_opt and live_opt["mid"] > 0.1) else g["premium"]
-        contract_cost = est_premium * 100.0
-        max_risk_dollars = portfolio_size * (risk_pct / 100.0)
-        risk_per_contract = contract_cost * (contract_sl_pct / 100.0)
-        suggested_contracts = max(1, int(max_risk_dollars // risk_per_contract)) if risk_per_contract > 0 else 1
-
-        st.markdown("### 🎯 بطاقة العقد المقترح واليونانيات")
-        g1, g2, g3, g4, g5 = st.columns(5)
-        g1.metric("نوع العقد والسترايك", f"{res['option_type'].split()[0]} ${res['strike_rec']}", f"DTE: {res['recommended_dte']} يوم")
-        g2.metric("سعر العقد التقديري", f"${est_premium:.2f}", f"التكلفة: ${contract_cost:.0f}/عقد")
-        g3.metric("الدلتا (Delta Δ)", f"{g['delta']:.2f}", f"الجاما: {g['gamma']:.4f}")
-        g4.metric("الثيتا (Theta Θ)", f"-${abs(g['theta_daily'])*100:.2f}/يوم", f"IV: {g['iv_pct']:.1f}%")
-        g5.metric("حجم الصفقة المقترح", f"{suggested_contracts} عقد", f"مخاطرة: ${max_risk_dollars:.0f}")
-
-        if live_opt:
-            spread_warn = "⚠️ سبريد واسع - استخدم Limit Order" if live_opt["spread_pct"] > 8 else "✅ سيولة جيدة"
-            st.caption(
-                f"📡 **بيانات السلسلة الحية (أقرب عقد متاح {live_opt['expiry']} | Strike ${live_opt['strike']}):** "
-                f"Bid: ${live_opt['bid']:.2f} | Ask: ${live_opt['ask']:.2f} | السبريد: {live_opt['spread_pct']:.1f}% ({spread_warn}) | "
-                f"الحجم: {live_opt['volume']} | العقود المفتوحة (OI): {live_opt['oi']}"
-            )
-
-        if st.button(f"📌 تسجيل صفقة {ticker} في سجل الأداء"):
-            opt_dir = "CALL" if res["is_bullish"] else "PUT"
-            log_new_trade(
-                ticker, trading_mode.split()[0], opt_dir, res["strike_rec"],
-                res["expiry_str"], est_premium, res["stop_loss"], res["target_1"], suggested_contracts
-            )
-            st.success("تم حفظ الصفقة بكامل تفاصيلها في تبويب سجل الصفقات!")
-
-        fig = make_subplots(
-            rows=3, cols=1, shared_xaxes=True, vertical_spacing=0.03,
-            row_heights=[0.60, 0.20, 0.20],
-            subplot_titles=(f"هيكل السعر ومستويات فيبوناتشي لـ {ticker}", "مؤشر القوة النسبية RSI (14)", "مؤشر الزخم MACD")
-        )
-        fig.add_trace(go.Candlestick(
-            x=df.index, open=df['Open'], high=df['High'], low=df['Low'], close=df['Close'], name="السعر"
-        ), row=1, col=1)
-        fig.add_trace(go.Scatter(x=df.index, y=df['BB_Upper'], line=dict(color='rgba(56,189,248,0.4)', width=1, dash='dash'), name="BB Upper"), row=1, col=1)
-        fig.add_trace(go.Scatter(x=df.index, y=df['BB_Lower'], line=dict(color='rgba(56,189,248,0.4)', width=1, dash='dash'), fill='tonexty', fillcolor='rgba(56,189,248,0.05)', name="BB Lower"), row=1, col=1)
-        fig.add_trace(go.Scatter(x=df.index, y=df['EMA20'], line=dict(color='#38BDF8', width=1.4), name="EMA 20"), row=1, col=1)
-        fig.add_trace(go.Scatter(x=df.index, y=df['EMA50'], line=dict(color='#F59E0B', width=1.8), name="EMA 50"), row=1, col=1)
-        fig.add_trace(go.Scatter(x=df.index, y=df['Swing_High'], mode='markers', marker=dict(color='#EF4444', size=8, symbol='triangle-down'), name="قمة"), row=1, col=1)
-        fig.add_trace(go.Scatter(x=df.index, y=df['Swing_Low'], mode='markers', marker=dict(color='#10B981', size=8, symbol='triangle-up'), name="قاع"), row=1, col=1)
-
-        fig.add_hline(y=res['target_1'], line_dash="dash", line_color="#10B981", annotation_text=f"هدف 1: ${res['target_1']:.2f}", row=1, col=1)
-        fig.add_hline(y=res['target_2'], line_dash="dot", line_color="#34D399", annotation_text=f"هدف 2: ${res['target_2']:.2f}", row=1, col=1)
-        fig.add_hline(y=res['stop_loss'], line_dash="dash", line_color="#EF4444", annotation_text=f"وقف: ${res['stop_loss']:.2f}", row=1, col=1)
-
-        fig.add_trace(go.Scatter(x=df.index, y=df['RSI'], line=dict(color='#A78BFA', width=1.5), name="RSI"), row=2, col=1)
-        fig.add_hline(y=70, line_dash="dot", line_color="#64748B", row=2, col=1)
-        fig.add_hline(y=30, line_dash="dot", line_color="#64748B", row=2, col=1)
-
-        fig.add_trace(go.Scatter(x=df.index, y=df['MACD'], line=dict(color='#38BDF8', width=1.3), name="MACD"), row=3, col=1)
-        fig.add_trace(go.Scatter(x=df.index, y=df['MACD_Signal'], line=dict(color='#F59E0B', width=1.3), name="Signal"), row=3, col=1)
-        fig.add_trace(go.Bar(x=df.index, y=df['MACD_Hist'], marker_color=['#10B981' if v >= 0 else '#EF4444' for v in df['MACD_Hist']], name="Hist"), row=3, col=1)
-
-        fig.update_layout(height=820, xaxis_rangeslider_visible=False, margin=dict(t=35, b=20))
-        st.plotly_chart(fig, use_container_width=True)
-
-with tab2:
-    st.subheader("🔍 الماسح الآلي للفرص (المضاربة اليومية والسوينق)")
-    watchlist = st.multiselect(
-        "اختر قائمة الأسهم والمؤشرات للفحص:",
-        ["SPY", "QQQ", "IWM", "NVDA", "AAPL", "TSLA", "MSFT", "AMZN", "META", "AMD", "GOOGL", "NFLX"],
-        default=["SPY", "QQQ", "IWM", "NVDA", "AAPL", "TSLA", "META"]
-    )
-    if st.button("🚀 بدء الفحص الشامل", type="primary"):
-        rows = []
-        prog = st.progress(0)
-        for idx, sym in enumerate(watchlist):
-            d, _ = analyze_ticker(sym, interval, swing_order, delta_mode, trading_mode)
-            if d:
-                g = d["greeks"]
-                rows.append({
-                    "الرمز": sym,
-                    "التقييم": f"{d['score']}/5 ⭐",
-                    "السعر الحالي": f"${d['current_price']:.2f}",
-                    "الاتجاه": d['trend'],
-                    "نوع العقد": d['option_type'],
-                    "Strike": f"${d['strike_rec']}",
-                    "قسط تقديري": f"${g['premium']:.2f}",
-                    "Delta Δ": f"{g['delta']:.2f}",
-                    "Theta/يوم": f"-${abs(g['theta_daily'])*100:.1f}",
-                    "MACD": d['macd_status'],
-                    "البولنجر": d['bb_status'],
-                    "الهدف 1": f"${d['target_1']:.2f}",
-                    "وقف السهم": f"${d['stop_loss']:.2f}",
-                    "DTE": f"{d['recommended_dte']} يوم",
-                    "R:R": f"1 : {d['rr_ratio']:.2f}"
-                })
-            prog.progress((idx + 1) / len(watchlist))
-
-        if rows:
-            res_df = pd.DataFrame(rows).sort_values(by="التقييم", ascending=False)
-            st.dataframe(res_df, use_container_width=True, hide_index=True)
-        else:
-            st.warning("لم يتم العثور على بيانات كافية.")
-
-with tab3:
-    st.subheader("📈 سجل تتبع الصفقات والأداء (Trade Journal)")
-    init_trade_log()
-    history_df = pd.read_csv(LOG_FILE)
-    if not history_df.empty:
-        if "Entry_Premium" in history_df.columns and "Max_Premium" in history_df.columns:
-            history_df["ROI_%"] = ((history_df["Max_Premium"] - history_df["Entry_Premium"]) / history_df["Entry_Premium"] * 100).round(2)
-        edited_df = st.data_editor(history_df, num_rows="dynamic", use_container_width=True, key="journal_editor")
-        col_s, col_c = st.columns([1, 1])
-        with col_s:
-            if st.button("💾 حفظ التعديلات"):
-                edited_df.to_csv(LOG_FILE, index=False)
-                st.success("تم حفظ السجل بنجاح!")
-                st.rerun()
-        with col_c:
-            if st.button("🗑️ مسح السجل بالكامل"):
-                os.remove(LOG_FILE)
-                st.warning("تم مسح السجل.")
-                st.rerun()
-    else:
-        st.info("لا توجد صفقات مسجلة حتى الآن. أضف أي فرصة من التبويب الأول لمتابعتها هنا.")
+# إضافة SPX بجانب SPY وبقية الأصول
+ticker = st.sidebar.selectbox("الأصل المالي:", ["SPX", "SPY", "QQQ", "IWM", "NVDA", "AAPL", "TSLA", "MSFT", "AMZN", "META", "AMD",
