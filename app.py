@@ -1,7 +1,7 @@
 """
 ================================================================================
 اسم الأداة: محلل السوينق والموجات الاحترافي مع مؤشرات MACD والبولنجر (Swing & Wave Analyzer)
-الإصدار: v2.2.6
+الإصدار: v2.2.7
 تاريخ التحديث: 2026-11-14
 ================================================================================
 """
@@ -18,9 +18,9 @@ from datetime import datetime, timedelta
 import os
 
 # إعدادات الصفحة الأساسية
-st.set_page_config(page_title="محلل السوينق والموجات الاحترافي v2.2.6", layout="wide", initial_sidebar_state="expanded")
+st.set_page_config(page_title="محلل السوينق والموجات الاحترافي v2.2.7", layout="wide", initial_sidebar_state="expanded")
 
-# --- حزمة التصميم البصري ---
+# --- حزمة التصميم البصري المبسطة الآمنة ---
 st.markdown("""
 <style>
 @import url('https://fonts.googleapis.com/css2?family=Cairo:wght@400;600;700;800&display=swap');
@@ -48,18 +48,14 @@ html, body, [class*="css"], .stMarkdown, .stText, p, h1, h2, h3, h4, label, butt
     direction: rtl;
     text-align: right;
 }
-[data-testid="stMetricLabel"] {
-    color: #94A3B8 !important;
-    font-size: 0.95rem !important;
-    font-weight: 600 !important;
-    justify-content: flex-end;
-}
-[data-testid="stMetricValue"] {
-    color: #F8FAFC !important;
-    font-size: 1.65rem !important;
-    font-weight: 800 !important;
-    direction: ltr;
-    text-align: right;
-}
 .live-banner {
-    background: linear-gradient
+    background: linear-gradient(90deg, #1E2536 0%, #252E42 100%);
+    border: 1px solid #334155;
+    border-right: 5px solid #38BDF8;
+    border-radius: 10px;
+    padding: 14px 20px;
+    margin-bottom: 20px;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    flex-wrap: wrap
