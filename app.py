@@ -3,8 +3,8 @@ import pandas as pd
 import os
 from datetime import datetime
 
-# إعداد الصفحة (إذا لم تكن معرفة مسبقاً في ملفك)
-# st.set_page_config(page_title="حاسبة ومانح صفقات الخيارات", layout="wide")
+# إعداد الصفحة
+st.set_page_config(page_title="حاسبة وإدارة مخاطر الخيارات", layout="wide")
 
 # ملف حفظ السجل محلياً بصيغة CSV
 LOG_FILE = "trade_history.csv"
@@ -19,7 +19,7 @@ def init_trade_log():
         df.to_csv(LOG_FILE, index=False)
 
 def log_new_trade(ticker, opt_type, strike, alert_price):
-    """إضافة صفقة أو تنبيه جديد تلقائياً أو يدوياً للسجل"""
+    """إضافة صفقة أو تنبيه جديد للسجل"""
     init_trade_log()
     df = pd.read_csv(LOG_FILE)
     
@@ -29,34 +29,46 @@ def log_new_trade(ticker, opt_type, strike, alert_price):
         "Option_Type": opt_type,
         "Strike": strike,
         "Alert_Price": alert_price,
-        "Max_Price_Reached": alert_price, # يبدأ بالسعر الأساسي عند التنبيه
+        "Max_Price_Reached": alert_price,
         "Status": "مفتوح للمراقبة ⏳",
-        "Notes": "تنبيه آلي من الماسح"
+        "Notes": "تنبيه من الماسح أو إدخال يدوي"
     }])
     
     df = pd.concat([df, new_entry], ignore_index=True)
     df.to_csv(LOG_FILE, index=False)
 
 # ==========================================
-# واجهة سجل تتبع الأداء
+# واجهة التطبيق الرئيسية
 # ==========================================
+st.title("📈 حاسبة إدارة المخاطر وماسح صفقات الخيارات")
 st.markdown("---")
+
+# قسم تجريبي لعرض الواجهة الأساسية للأداة
+st.subheader("⚙️ لوحة التحكم والإعدادات الفنية")
+col_s1, col_s2 = st.columns(2)
+with col_s1:
+    timeframe = st.selectbox("الإطار الزمني (Timeframe)", ["1d", "1h", "4h"])
+with col_s2:
+    sensitivity = st.slider("حساسية اكتشاف القمم والقيعان (Swing Sensitivity)", 1, 15, 7)
+
+st.markdown("---")
+
+# ==========================================
+# سجل تتبع الأداء والصفقات الحية
+# ==========================================
 st.subheader("📊 سجل تتبع الأداء والصفقات الحية (Trade Journal)")
 
 init_trade_log()
 history_df = pd.read_csv(LOG_FILE)
 
 if not history_df.empty:
-    # حساب نسبة التغير في السعر تلقائياً بناءً على أعلى سعر وصل إليه العقد
     if "Alert_Price" in history_df.columns and "Max_Price_Reached" in history_df.columns:
-        # حساب نسبة الربح المئوية: ((أعلى سعر - سعر التنبيه) / سعر التنبيه) * 100
         history_df["Profit_Percentage_%"] = (
             (history_df["Max_Price_Reached"] - history_df["Alert_Price"]) / history_df["Alert_Price"] * 100
         ).round(2)
 
-    st.write("💡 **تلميح:** يمكنك تعديل خانة (أعلى سعر وصل له Max_Price_Reached) مباشرة من الجدول أدناه لتحديث أداء العقود (مثل تحديث عقد META إلى 20.20):")
+    st.write("💡 **تلميح:** يمكنك تعديل خانة (أعلى سعر وصل له Max_Price_Reached) مباشرة من الجدول أدناه لتحديث أداء العقود:")
     
-    # جدول تفاعلي يتيح لك تعديل البيانات وتحديثها مباشرة
     edited_df = st.data_editor(
         history_df, 
         num_rows="dynamic",
@@ -78,10 +90,10 @@ if not history_df.empty:
                 st.warning("تم مسح السجل بنجاح.")
                 st.rerun()
 else:
-    st.info("لا توجد صفقات مسجلة حتى الآن. يمكنك إضافة عقود للمراقبة أدناه.")
+    st.info("لا توجد صفقات مسجلة حتى الآن. يمكنك إضافة عقود للمراقبة عبر النموذج أدناه.")
 
 # ==========================================
-# نموذج إضافة صفقة جديدة يدوياً أو ربطها بالماسح
+# نموذج إضافة صفقة جديدة يدوياً
 # ==========================================
 with st.expander("➕ إضافة عقد جديد للمراقبة يدوياً"):
     with st.form("add_trade_form"):
@@ -97,4 +109,6 @@ with st.expander("➕ إضافة عقد جديد للمراقبة يدوياً")
         
         submit_btn = st.form_submit_button("إضافة إلى جدول التتبع")
         if submit_btn:
-            log_new_trade(t_ticker, t_type, t_strike,
+            log_new_trade(t_ticker, t_type, t_strike, t_price)
+            st.success(f"تم إضافة عقد {t_ticker} بنجاح إلى جدول التتبع!")
+            st.rerun()
