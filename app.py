@@ -1,7 +1,7 @@
 """
 ================================================================================
 اسم الأداة: محلل العقود والسوينق الاحترافي (Pro Options & Swing Analyzer)
-الإصدار: v2.3.4
+الإصدار: v2.3.5
 الوصف: تحليل هيكلي للأسهم والمؤشرات (بما فيها SPX 500)، تحديد الأهداف بفيبوناتشي
        و ATR، تسعير العقود وحساب اليونانيات، وإدارة حجم العقود مع فلتر ذكي
        للبحث التلقائي عن العقود الرخيصة (< $3.00) حتى على مؤشر SPX.
@@ -21,7 +21,7 @@ import os
 
 # إعدادات الصفحة
 st.set_page_config(
-    page_title="محلل العقود والسوينق الاحترافي v2.3.4",
+    page_title="محلل العقود والسوينق الاحترافي v2.3.5",
     layout="wide",
     initial_sidebar_state="expanded"
 )
@@ -449,7 +449,7 @@ def analyze_ticker(symbol, interval, swing_order, pricing_strategy, trading_mode
 
 
 # --- واجهة المستخدم ---
-st.title("📈 محلل العقود والسوينق الاحترافي (v2.3.4)")
+st.title("📈 محلل العقود والسوينق الاحترافي (v2.3.5)")
 st.markdown("منصة تحليلية مصممة بعقلية مضارب العقود: محرك بحث ذكي لإيجاد العقود الرخيصة (< $3.00) حتى على مؤشر SPX.")
 
 # القائمة الجانبية
@@ -531,7 +531,7 @@ with tab1:
 
         premium_badge = f"🟢 ضمن الميزانية (<${max_contract_price:.1f})" if est_premium <= max_contract_price else "⚠️ أعلى من السقف"
 
-        g1.metric("نوع العقد والسترايك", f"{res['option_type'].split()[0]} ${res['strike_rec']}", f"DTE: {res['recommended_dte']} يوم")
+        g1.metric("نوع العقد والسترايك", f"{res['option_type'].split()[0]} ${res['strike_rec']}", f"DTE: {res['recommended_dte']} يوم (ينتهي في: {res['expiry_str']})")
         g2.metric("سعر العقد التقديري", f"${est_premium:.2f}", f"${contract_cost:.0f}/عقد ({premium_badge})")
         g3.metric("الدلتا (Delta Δ)", f"{g['delta']:.2f}", f"الجاما: {g['gamma']:.4f}")
         g4.metric("الثيتا (Theta Θ)", f"-${abs(g['theta_daily'])*100:.2f}/يوم", f"IV: {g['iv_pct']:.1f}%")
