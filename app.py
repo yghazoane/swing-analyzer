@@ -1,7 +1,10 @@
 """
 ================================================================================
 اسم الأداة: محلل العقود والسوينق الاحترافي (Pro Options & Swing Analyzer)
-الإصدار: v2.3.3 (دعم تصفية العقود الرخيصة < 3$ ومضاربات OTM)
+الإصدار: v2.3.4
+الوصف: تحليل هيكلي للأسهم والمؤشرات (بما فيها SPX 500)، تحديد الأهداف بفيبوناتشي
+       و ATR، تسعير العقود وحساب اليونانيات، وإدارة حجم العقود مع فلتر ذكي
+       للبحث التلقائي عن العقود الرخيصة (< $3.00) حتى على مؤشر SPX.
 ================================================================================
 """
 
@@ -18,7 +21,7 @@ import os
 
 # إعدادات الصفحة
 st.set_page_config(
-    page_title="محلل العقود والسوينق الاحترافي v2.3.3",
+    page_title="محلل العقود والسوينق الاحترافي v2.3.4",
     layout="wide",
     initial_sidebar_state="expanded"
 )
@@ -94,6 +97,17 @@ def round_to_strike_step(price):
         return float(round(price / 5.0) * 5.0)
 
 
+def get_strike_step(price):
+    if price < 50:
+        return 0.5
+    elif price < 250:
+        return 1.0
+    elif price < 500:
+        return 2.5
+    else:
+        return 5.0
+
+
 def calculate_bs_metrics(S, K, T_days, r, sigma, is_call=True):
     """حساب السعر النظري للعقد واليونانيات الكاملة (Delta, Gamma, Theta, Vega)"""
     T = max(T_days / 365.0, 1e-5)
@@ -127,6 +141,27 @@ def calculate_bs_metrics(S, K, T_days, r, sigma, is_call=True):
     }
 
 
+def find_budget_strike(S, T_days, r, sigma, is_call, max_premium=2.85):
+    """
+    خوارزمية بحث تكرارية لإيجاد أول سترايك OTM يكون قسطه النظري أقل من max_premium ($3.00)
+    تعمل بكفاءة حتى على المؤشرات مرتفعة السعر مثل SPX.
+    """
+    step = get_strike_step(S)
+    candidate_k = round_to_strike_step(S)
+    direction = 1 if is_call else -1
+
+    best_k = candidate_k
+    for _ in range(120):
+        candidate_k += direction * step
+        if candidate_k <= step:
+            break
+        metrics = calculate_bs_metrics(S, candidate_k, T_days, r, sigma, is_call)
+        best_k = candidate_k
+        if metrics["premium"] <= max_premium:
+            break
+    return float(best_k)
+
+
 @st.cache_data(ttl=600)
 def fetch_price_history(symbol, period, interval):
     """جلب البيانات التاريخية مع آلية احتياطية وتوافق مع رمز مؤشر SPX (^GSPC)"""
@@ -147,8 +182,8 @@ def fetch_price_history(symbol, period, interval):
 
 
 @st.cache_data(ttl=600)
-def fetch_live_option_hint(symbol, target_dte, is_call, target_strike):
-    """جلب أقرب عقد حقيقي من سلسلة الأوبشن الحية"""
+def fetch_live_option_hint(symbol, target_dte, is_call, target_strike, budget_mode=False, max_budget=3.0):
+    """جلب أقرب عقد حقيقي من سلسلة الأوبشن الحية مع دعم البحث عن عقد تحت السقف السعري"""
     try:
         query_symbol = "^GSPC" if symbol == "SPX" else symbol
         tk = yf.Ticker(query_symbol)
@@ -164,8 +199,27 @@ def fetch_live_option_hint(symbol, target_dte, is_call, target_strike):
         df_opt = chain.calls if is_call else chain.puts
         if df_opt is None or df_opt.empty:
             return None
-        idx = (df_opt['strike'] - target_strike).abs().idxmin()
-        row = df_opt.loc[idx]
+
+        df_opt = df_opt.copy()
+        df_opt['mid_calc'] = np.where(
+            (df_opt['bid'] > 0) & (df_opt['ask'] > 0),
+            (df_opt['bid'] + df_opt['ask']) / 2.0,
+            df_opt['lastPrice']
+        )
+
+        if budget_mode:
+            affordable = df_opt[(df_opt['mid_calc'] > 0.15) & (df_opt['mid_calc'] <= max_budget)]
+            if not affordable.empty:
+                # اختيار أعلى عقد سيولة وقرباً للسعر ضمن الميزانية (< $3)
+                idx = (affordable['strike'] - target_strike).abs().idxmin()
+                row = affordable.loc[idx]
+            else:
+                idx = (df_opt['strike'] - target_strike).abs().idxmin()
+                row = df_opt.loc[idx]
+        else:
+            idx = (df_opt['strike'] - target_strike).abs().idxmin()
+            row = df_opt.loc[idx]
+
         bid = float(row.get('bid', 0) or 0)
         ask = float(row.get('ask', 0) or 0)
         last_p = float(row.get('lastPrice', 0) or 0)
@@ -186,7 +240,7 @@ def fetch_live_option_hint(symbol, target_dte, is_call, target_strike):
         return None
 
 
-def analyze_ticker(symbol, interval, swing_order, pricing_strategy, trading_mode):
+def analyze_ticker(symbol, interval, swing_order, pricing_strategy, trading_mode, max_contract_price=3.0):
     try:
         period_map = {"15m": "1mo", "1h": "3mo", "1d": "1y"}
         period = period_map.get(interval, "1y")
@@ -303,24 +357,34 @@ def analyze_ticker(symbol, interval, swing_order, pricing_strategy, trading_mode
         if "يومي" in trading_mode or interval in ["15m", "1h"]:
             est_days_t1 = 1 if interval == "15m" else 2
             est_days_t2 = 3 if interval == "15m" else 5
-            recommended_dte = 7 if interval == "15m" else 14
+            recommended_dte = 3 if interval == "15m" else 7
         else:
             est_days_t1 = max(3, int(wave_bars * 0.8))
             est_days_t2 = max(6, int(wave_bars * 1.3))
             recommended_dte = min(60, max(28, est_days_t2 + 21))
 
-        # هندسة السترايك بناءً على استراتيجية التسعير (عقود رخيصة < 3$ vs متوازن)
-        if "رخيصة" in pricing_strategy:
-            # ابتعاد أكبر عن السعر الحالي (OTM بنحو 1.5 إلى 2.0 ATR للحصول على قسط رخيص)
-            raw_strike = current_price + (current_atr * 1.8 if is_bullish else -current_atr * 1.8)
-            # تقليص الـ DTE للمضاربة السريعة بالعقود الرخيصة إذا طلب المستخدم
-            recommended_dte = min(recommended_dte, 7)
+        is_budget_mode = "رخيصة" in pricing_strategy
+
+        # هندسة السترايك الذكية
+        if is_budget_mode:
+            # للعقود الرخيصة نستخدم صلاحية قصيرة (1-5 أيام) ونبحث عن السترايك الذي يحقق السعر المستهدف
+            recommended_dte = 2 if interval == "15m" else 5
+            strike_rec = find_budget_strike(
+                S=current_price,
+                T_days=recommended_dte,
+                r=0.045,
+                sigma=est_vol,
+                is_call=is_bullish,
+                max_premium=max_contract_price * 0.92
+            )
         elif "هجومي" in pricing_strategy:
             raw_strike = current_price + (current_atr * 0.9 if is_bullish else -current_atr * 0.9)
+            strike_rec = round_to_strike_step(raw_strike)
+        elif "تحوطي" in pricing_strategy:
+            raw_strike = current_price - (current_atr * 0.85 if is_bullish else -current_atr * 0.85)
+            strike_rec = round_to_strike_step(raw_strike)
         else:
-            raw_strike = current_price
-
-        strike_rec = round_to_strike_step(raw_strike)
+            strike_rec = round_to_strike_step(current_price)
 
         # حساب اليونانيات والسعر النظري للعقد
         greeks = calculate_bs_metrics(
@@ -329,7 +393,18 @@ def analyze_ticker(symbol, interval, swing_order, pricing_strategy, trading_mode
         )
 
         # محاولة جلب بيانات السلسلة الحية للمقارنة
-        live_opt = fetch_live_option_hint(symbol, recommended_dte, is_bullish, strike_rec)
+        live_opt = fetch_live_option_hint(
+            symbol, recommended_dte, is_bullish, strike_rec,
+            budget_mode=is_budget_mode, max_budget=max_contract_price
+        )
+
+        # في وضع العقود الرخيصة، إذا وجدنا عقداً حياً تحت السقف نعتمد سترايكه الفعلي
+        if is_budget_mode and live_opt and 0.15 < live_opt["mid"] <= max_contract_price:
+            strike_rec = live_opt["strike"]
+            greeks = calculate_bs_metrics(
+                S=current_price, K=strike_rec, T_days=recommended_dte,
+                r=0.045, sigma=est_vol, is_call=is_bullish
+            )
 
         risk_per_share = abs(current_price - stop_loss)
         reward_t1 = abs(target_1 - current_price)
@@ -374,13 +449,13 @@ def analyze_ticker(symbol, interval, swing_order, pricing_strategy, trading_mode
 
 
 # --- واجهة المستخدم ---
-st.title("📈 محلل العقود والسوينق الاحترافي (v2.3.3)")
-st.markdown("منصة تحليلية مصممة بعقلية مضارب العقود: دعم العقود الرخيصة (< 3$) للمضاربات اليومية السريعة وإدارة المخاطر.")
+st.title("📈 محلل العقود والسوينق الاحترافي (v2.3.4)")
+st.markdown("منصة تحليلية مصممة بعقلية مضارب العقود: محرك بحث ذكي لإيجاد العقود الرخيصة (< $3.00) حتى على مؤشر SPX.")
 
 # القائمة الجانبية
 st.sidebar.header("⚙️ إعدادات التداول")
-trading_mode = st.sidebar.radio("أسلوب المضاربة:", ["سوينق (Swing | 21-45 DTE)", "مضاربة يومية / قصيرة (Intraday | 7-14 DTE)"])
-default_tf_idx = 2 if "سوينق" in trading_mode else 1
+trading_mode = st.sidebar.radio("أسلوب المضاربة:", ["مضاربة يومية / قصيرة (Intraday | 1-7 DTE)", "سوينق (Swing | 21-45 DTE)"])
+default_tf_idx = 1 if "يومية" in trading_mode else 2
 interval = st.sidebar.selectbox("الإطار الزمني:", ["15m", "1h", "1d"], index=default_tf_idx)
 ticker = st.sidebar.selectbox("الأصل المالي:", ["SPX", "SPY", "QQQ", "IWM", "NVDA", "AAPL", "TSLA", "MSFT", "AMZN", "META", "AMD", "GOOGL", "NFLX"])
 swing_order = st.sidebar.slider("حساسية القمم والقيعان:", min_value=3, max_value=15, value=7)
@@ -394,11 +469,16 @@ st.sidebar.header("🎯 استراتيجية التسعير والعقود")
 pricing_strategy = st.sidebar.selectbox(
     "فلتر تصفية العقود:",
     [
-        "🔥 عقود رخيصة ومضاربية (< $3.00 للتكلفة المبدئية)",
+        "🔥 عقود رخيصة ومضاربية (تحت السقف السعري)",
         "⚖️ متوازن (ATM | Delta ~0.50)",
         "⚡ هجومي (OTM متوسط | Delta ~0.35)",
         "🛡️ تحوطي آمن (ITM | Delta ~0.65)"
     ]
+)
+max_contract_price = st.sidebar.number_input(
+    "الحد الأقصى لسعر العقد ($):",
+    min_value=0.50, max_value=50.0, value=3.00, step=0.50,
+    help="عند تفعيل فلتر العقود الرخيصة، سيبحث النظام عن سترايك سعره أقل من هذا الرقم (مثلاً $3.00 = $300 للعقد)."
 )
 portfolio_size = st.sidebar.number_input("حجم المحفظة ($):", min_value=1000, value=10000, step=1000)
 risk_pct = st.sidebar.number_input("المخاطرة القصوى للصفقة (%):", min_value=0.5, max_value=5.0, value=1.5, step=0.5)
@@ -411,7 +491,7 @@ tab1, tab2, tab3 = st.tabs([
 ])
 
 with tab1:
-    res, err_detail = analyze_ticker(ticker, interval, swing_order, pricing_strategy, trading_mode)
+    res, err_detail = analyze_ticker(ticker, interval, swing_order, pricing_strategy, trading_mode, max_contract_price)
     if res is None:
         st.warning(f"⚠️ تعذر جلب بيانات كافية للرمز ({ticker}) على الإطار ({interval}).")
         if err_detail:
@@ -432,7 +512,15 @@ with tab1:
         c3.metric("الهدف الثاني (1.618)", f"${res['target_2']:.2f}", f"متوقع: {res['date_t2']}")
         c4.metric("وقف الخسارة (للسهم)", f"${res['stop_loss']:.2f}", f"R:R = 1 : {res['rr_ratio']:.2f}")
 
-        est_premium = live_opt["mid"] if (live_opt and live_opt["mid"] > 0.1) else g["premium"]
+        # اختيار السعر المعروض: إذا كان السعر الحي ضمن الميزانية نعرضه، وإلا نعرض السعر النظري المحسوب للسترايك الاقتصادي
+        if "رخيصة" in pricing_strategy:
+            if live_opt and 0.10 < live_opt["mid"] <= max_contract_price:
+                est_premium = live_opt["mid"]
+            else:
+                est_premium = g["premium"]
+        else:
+            est_premium = live_opt["mid"] if (live_opt and live_opt["mid"] > 0.1) else g["premium"]
+
         contract_cost = est_premium * 100.0
         max_risk_dollars = portfolio_size * (risk_pct / 100.0)
         risk_per_contract = contract_cost * (contract_sl_pct / 100.0)
@@ -440,12 +528,11 @@ with tab1:
 
         st.markdown("### 🎯 بطاقة العقد المقترح واليونانيات")
         g1, g2, g3, g4, g5 = st.columns(5)
-        
-        # تنبيه إذا كانت استراتيجية العقود الرخيصة مفعلة والسعر أقل من 3$
-        premium_badge = "🟢 رخيص جداً (<$3)" if est_premium < 3.0 else "⚠️ قسط مرتفع"
-        
+
+        premium_badge = f"🟢 ضمن الميزانية (<${max_contract_price:.1f})" if est_premium <= max_contract_price else "⚠️ أعلى من السقف"
+
         g1.metric("نوع العقد والسترايك", f"{res['option_type'].split()[0]} ${res['strike_rec']}", f"DTE: {res['recommended_dte']} يوم")
-        g2.metric("سعر العقد التقديري", f"${est_premium:.2f}", f"التكلفة: ${contract_cost:.0f}/عقد ({premium_badge})")
+        g2.metric("سعر العقد التقديري", f"${est_premium:.2f}", f"${contract_cost:.0f}/عقد ({premium_badge})")
         g3.metric("الدلتا (Delta Δ)", f"{g['delta']:.2f}", f"الجاما: {g['gamma']:.4f}")
         g4.metric("الثيتا (Theta Θ)", f"-${abs(g['theta_daily'])*100:.2f}/يوم", f"IV: {g['iv_pct']:.1f}%")
         g5.metric("حجم الصفقة المقترح", f"{suggested_contracts} عقد", f"مخاطرة: ${max_risk_dollars:.0f}")
@@ -507,7 +594,7 @@ with tab2:
         rows = []
         prog = st.progress(0)
         for idx, sym in enumerate(watchlist):
-            d, _ = analyze_ticker(sym, interval, swing_order, pricing_strategy, trading_mode)
+            d, _ = analyze_ticker(sym, interval, swing_order, pricing_strategy, trading_mode, max_contract_price)
             if d:
                 g = d["greeks"]
                 rows.append({
