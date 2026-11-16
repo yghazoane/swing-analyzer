@@ -1,7 +1,7 @@
 """
 ================================================================================
 اسم الأداة: محلل العقود والسوينق الاحترافي (Pro Options & Swing Analyzer)
-الإصدار: v2.4.1
+الإصدار: v2.4.2
 الوصف: تحليل هيكلي للأسهم والمؤشرات (بما فيها SPX 500)، تحديد الأهداف بفيبوناتشي
        و ATR، تسعير العقود وحساب اليونانيات، وإدارة حجم العقود مع فلتر ذكي
        للبحث التلقائي عن العقود الرخيصة (< $3.00) حتى على مؤشر SPX.
@@ -21,7 +21,7 @@ import os
 
 # إعدادات الصفحة
 st.set_page_config(
-    page_title="محلل العقود والسوينق الاحترافي v2.4.1",
+    page_title="محلل العقود والسوينق الاحترافي v2.4.2",
     layout="wide",
     initial_sidebar_state="expanded"
 )
@@ -267,7 +267,7 @@ def fetch_live_option_hint(symbol, target_dte, is_call, target_strike, budget_mo
         df_opt['mid_calc'] = np.where(
             (df_opt['bid'] > 0) & (df_opt['ask'] > 0),
             (df_opt['bid'] + df_opt['ask']) / 2.0,
-            df_opt['lastPrice']
+            np.where(df_opt['ask'] > 0, df_opt['ask'] * 0.90, df_opt['lastPrice'])
         )
 
         if budget_mode:
@@ -286,14 +286,16 @@ def fetch_live_option_hint(symbol, target_dte, is_call, target_strike, budget_mo
         bid = float(row.get('bid', 0) or 0)
         ask = float(row.get('ask', 0) or 0)
         last_p = float(row.get('lastPrice', 0) or 0)
-        mid = (bid + ask) / 2.0 if (bid > 0 and ask > 0) else last_p
-        spread_pct = ((ask - bid) / ask * 100) if ask > 0 and bid > 0 else 0.0
+        has_live_quote = (bid > 0 and ask > 0)
+        mid = (bid + ask) / 2.0 if has_live_quote else (ask * 0.90 if ask > 0 else last_p)
+        spread_pct = ((ask - bid) / ask * 100) if has_live_quote else 99.0
         return {
             "expiry": best_exp,
             "strike": float(row['strike']),
             "bid": bid,
             "ask": ask,
             "mid": mid,
+            "has_live_quote": has_live_quote,
             "spread_pct": spread_pct,
             "volume": int(row.get('volume', 0) or 0),
             "oi": int(row.get('openInterest', 0) or 0),
@@ -321,10 +323,10 @@ def analyze_ticker(symbol, interval, swing_order, pricing_strategy, trading_mode
         df['EMA20'] = df['Close'].ewm(span=20, adjust=False).mean()
         df['EMA50'] = df['Close'].ewm(span=50, adjust=False).mean()
 
-        # مؤشر RSI (14)
+        # مؤشر RSI (14) باستخدام تنعيم وايلدر القياسي (Wilder's Smoothing) لمطابقة TradingView ومنصة سهم
         delta_s = df['Close'].diff()
-        gain = (delta_s.where(delta_s > 0, 0)).rolling(window=14).mean()
-        loss = (-delta_s.where(delta_s < 0, 0)).rolling(window=14).mean()
+        gain = delta_s.clip(lower=0).ewm(alpha=1/14, min_periods=14, adjust=False).mean()
+        loss = (-delta_s.clip(upper=0)).ewm(alpha=1/14, min_periods=14, adjust=False).mean()
         rs = gain / loss.replace(0, np.nan)
         df['RSI'] = (100 - (100 / (1 + rs))).fillna(50)
 
@@ -502,7 +504,9 @@ def analyze_ticker(symbol, interval, swing_order, pricing_strategy, trading_mode
         pcr_note = "متعادل"
         if live_opt:
             sp = live_opt.get("spread_pct", 0.0)
-            if sp > 10.0:
+            if not live_opt.get("has_live_quote", True):
+                spread_status = "عروض Bid/Ask غير مكتملة - اعتماد التسعير النظري ⚠️"
+            elif sp > 10.0:
                 spread_status = f"سبريد خطر ({sp:.1f}%) - تجنب أمر السوق 🔴"
             elif sp > 6.0:
                 spread_status = f"سبريد متوسط ({sp:.1f}%) - استخدم Limit ⚠️"
@@ -569,7 +573,20 @@ def analyze_ticker(symbol, interval, swing_order, pricing_strategy, trading_mode
         is_weekend = today_date.weekday() >= 5
         market_note = "السوق مغلق حالياً (عطلة نهاية الأسبوع) • تم ضبط الانتهاء لأقرب جلسة قادمة" if is_weekend else "جلسة التداول نشطة / محدثة" 
 
+        # توحيد السعر المعتمد للعقد بين التحليل التفصيلي والماسح الآلي
+        if is_budget_mode:
+            if live_opt and live_opt.get("has_live_quote") and 0.10 < live_opt["mid"] <= max_contract_price:
+                display_premium = live_opt["mid"]
+            else:
+                display_premium = greeks["premium"]
+        else:
+            if live_opt and live_opt.get("has_live_quote") and live_opt["mid"] > 0.10:
+                display_premium = live_opt["mid"]
+            else:
+                display_premium = greeks["premium"]
+
         return {
+            "display_premium": float(display_premium),
             "df": df,
             "current_price": current_price,
             "current_atr": current_atr,
@@ -605,7 +622,7 @@ def analyze_ticker(symbol, interval, swing_order, pricing_strategy, trading_mode
 
 
 # --- واجهة المستخدم ---
-st.title("📈 محلل العقود والسوينق الاحترافي (v2.4.1)")
+st.title("📈 محلل العقود والسوينق الاحترافي (v2.4.2)")
 st.markdown("منصة تحليلية مصممة بعقلية مضارب العقود: محرك بحث ذكي لإيجاد العقود الرخيصة (< $3.00) حتى على مؤشر SPX.")
 
 # القائمة الجانبية
@@ -674,14 +691,7 @@ with tab1:
         c3.metric("الهدف الثاني (1.618)", f"${res['target_2']:.2f}", f"متوقع: {res['date_t2']}")
         c4.metric("وقف الخسارة (للسهم)", f"${res['stop_loss']:.2f}", f"R:R = 1 : {res['rr_ratio']:.2f}")
 
-        # اختيار السعر المعروض: إذا كان السعر الحي ضمن الميزانية نعرضه، وإلا نعرض السعر النظري المحسوب للسترايك الاقتصادي
-        if "رخيصة" in pricing_strategy:
-            if live_opt and 0.10 < live_opt["mid"] <= max_contract_price:
-                est_premium = live_opt["mid"]
-            else:
-                est_premium = g["premium"]
-        else:
-            est_premium = live_opt["mid"] if (live_opt and live_opt["mid"] > 0.1) else g["premium"]
+        est_premium = res["display_premium"]
 
         contract_cost = est_premium * 100.0
         max_risk_dollars = portfolio_size * (risk_pct / 100.0)
@@ -747,7 +757,7 @@ with tab1:
             )
 
         if live_opt:
-            spread_warn = "⚠️ سبريد واسع - استخدم Limit Order" if live_opt["spread_pct"] > 8 else "✅ سيولة جيدة"
+            spread_warn = "⚠️ عروض غير مكتملة" if not live_opt.get("has_live_quote", True) else ("⚠️ سبريد واسع - استخدم Limit Order" if live_opt["spread_pct"] > 8 else "✅ سيولة جيدة")
             st.caption(
                 f"📡 **بيانات السلسلة الحية (أقرب عقد متاح {live_opt['expiry']} | Strike ${live_opt['strike']}):** "
                 f"Bid: ${live_opt['bid']:.2f} | Ask: ${live_opt['ask']:.2f} | السبريد: {live_opt['spread_pct']:.1f}% ({spread_warn}) | "
@@ -813,7 +823,7 @@ with tab2:
                     "الاتجاه": d['trend'],
                     "نوع العقد": d['option_type'],
                     "Strike": f"${d['strike_rec']}",
-                    "قسط تقديري": f"${g['premium']:.2f}",
+                    "قسط تقديري": f"${d['display_premium']:.2f}",
                     "Delta Δ": f"{g['delta']:.2f}",
                     "احتمالية PoP": f"{g['pop_pct']:.0f}%",
                     "Theta/يوم": f"-${abs(g['theta_daily'])*100:.1f}",
