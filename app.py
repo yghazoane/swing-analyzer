@@ -1,7 +1,7 @@
 """
 ================================================================================
 اسم الأداة: محلل العقود والسوينق الاحترافي (Pro Options & Swing Analyzer)
-الإصدار: v2.4.0
+الإصدار: v2.4.1
 الوصف: تحليل هيكلي للأسهم والمؤشرات (بما فيها SPX 500)، تحديد الأهداف بفيبوناتشي
        و ATR، تسعير العقود وحساب اليونانيات، وإدارة حجم العقود مع فلتر ذكي
        للبحث التلقائي عن العقود الرخيصة (< $3.00) حتى على مؤشر SPX.
@@ -21,7 +21,7 @@ import os
 
 # إعدادات الصفحة
 st.set_page_config(
-    page_title="محلل العقود والسوينق الاحترافي v2.4.0",
+    page_title="محلل العقود والسوينق الاحترافي v2.4.1",
     layout="wide",
     initial_sidebar_state="expanded"
 )
@@ -197,7 +197,7 @@ def find_budget_strike(S, T_days, r, sigma, is_call, max_premium=2.85):
     return float(best_k)
 
 
-@st.cache_data(ttl=600)
+@st.cache_data(ttl=60)
 def fetch_price_history(symbol, period, interval):
     """جلب البيانات التاريخية مع آلية احتياطية وتوافق مع رمز مؤشر SPX (^GSPC)"""
     try:
@@ -216,17 +216,27 @@ def fetch_price_history(symbol, period, interval):
         return pd.DataFrame(), str(e)
 
 
-@st.cache_data(ttl=600)
+@st.cache_data(ttl=60)
 def fetch_live_option_hint(symbol, target_dte, is_call, target_strike, budget_mode=False, max_budget=3.0):
-    """جلب أقرب عقد حقيقي من سلسلة الأوبشن الحية مع دعم البحث عن عقد تحت السقف السعري"""
+    """جلب أقرب عقد حقيقي من سلسلة الأوبشن الحية مع دعم البحث عن عقد تحت السقف السعري و 0DTE"""
     try:
-        query_symbol = "^GSPC" if symbol == "SPX" else symbol
-        tk = yf.Ticker(query_symbol)
-        expirations = tk.options
-        if not expirations:
+        # Yahoo Finance يتيح سلسلة عقود SPX تحت رمز ^SPX أو ^GSPC
+        candidates = ["^SPX", "^GSPC"] if symbol == "SPX" else [symbol]
+        tk = None
+        expirations = ()
+        for cand in candidates:
+            t_cand = yf.Ticker(cand)
+            exps = t_cand.options
+            if exps:
+                tk = t_cand
+                expirations = exps
+                break
+        if not expirations or tk is None:
             return None
+
         today = datetime.now().date()
-        valid_exps = [e for e in expirations if datetime.strptime(e, "%Y-%m-%d").date() > today]
+        # السماح بعقود نفس اليوم (0DTE) إذا كان يوم تداول نشط (>= today)
+        valid_exps = [e for e in expirations if datetime.strptime(e, "%Y-%m-%d").date() >= today]
         if not valid_exps:
             valid_exps = list(expirations)
         best_exp = min(
@@ -519,12 +529,17 @@ def analyze_ticker(symbol, interval, swing_order, pricing_strategy, trading_mode
             if wall_parts:
                 oi_wall_note = " | ".join(wall_parts)
 
-        # في وضع العقود الرخيصة، إذا وجدنا عقداً حياً تحت السقف نعتمد سترايكه الفعلي
-        if is_budget_mode and live_opt and 0.15 < live_opt["mid"] <= max_contract_price:
-            strike_rec = live_opt["strike"]
+        # تحديث السترايك والتقلب الضمني (IV) من السلسلة الحية لضمان تطابق التسعير واليونانيات مع منصات التداول
+        if live_opt:
+            live_iv = (live_opt.get("iv", 0.0) / 100.0)
+            effective_sigma = live_iv if live_iv > 0.05 else est_vol
+            if is_budget_mode and 0.15 < live_opt["mid"] <= max_contract_price:
+                strike_rec = live_opt["strike"]
+            elif not is_budget_mode:
+                strike_rec = live_opt["strike"]
             greeks = calculate_bs_metrics(
-                S=current_price, K=strike_rec, T_days=recommended_dte,
-                r=0.045, sigma=est_vol, is_call=is_bullish
+                S=current_price, K=strike_rec, T_days=max(recommended_dte, 0.25),
+                r=0.045, sigma=effective_sigma, is_call=is_bullish
             )
 
         risk_per_share = abs(current_price - stop_loss)
@@ -543,9 +558,9 @@ def analyze_ticker(symbol, interval, swing_order, pricing_strategy, trading_mode
         today_date = datetime.now().date()
         if live_opt and live_opt.get("expiry"):
             live_exp_date = datetime.strptime(live_opt["expiry"], "%Y-%m-%d").date()
-            if live_exp_date > today_date and live_exp_date.weekday() < 5:
+            if live_exp_date >= today_date and live_exp_date.weekday() < 5:
                 expiry_str = live_opt["expiry"]
-                recommended_dte = max(1, (live_exp_date - today_date).days)
+                recommended_dte = max(0, (live_exp_date - today_date).days)
             else:
                 expiry_str, recommended_dte = get_next_valid_option_expiry(last_dt, recommended_dte, symbol)
         else:
@@ -590,7 +605,7 @@ def analyze_ticker(symbol, interval, swing_order, pricing_strategy, trading_mode
 
 
 # --- واجهة المستخدم ---
-st.title("📈 محلل العقود والسوينق الاحترافي (v2.4.0)")
+st.title("📈 محلل العقود والسوينق الاحترافي (v2.4.1)")
 st.markdown("منصة تحليلية مصممة بعقلية مضارب العقود: محرك بحث ذكي لإيجاد العقود الرخيصة (< $3.00) حتى على مؤشر SPX.")
 
 # القائمة الجانبية
@@ -678,8 +693,12 @@ with tab1:
 
         premium_badge = f"ضمن الميزانية (أقل من ${max_contract_price:.1f}) 🟢" if est_premium <= max_contract_price else "أعلى من السقف السعري ⚠️"
 
-        day_word = "يوم" if res['recommended_dte'] in [1, 2] or res['recommended_dte'] > 10 else "أيام"
-        g1.metric("نوع العقد والسترايك", f"{res['option_type'].split()[0]} ${res['strike_rec']}", f"ينتهي بعد {res['recommended_dte']} {day_word} • {res['expiry_str']}")
+        if res['recommended_dte'] == 0:
+            dte_label = f"ينتهي اليوم (0DTE) • {res['expiry_str']}"
+        else:
+            day_word = "يوم" if res['recommended_dte'] in [1, 2] or res['recommended_dte'] > 10 else "أيام"
+            dte_label = f"ينتهي بعد {res['recommended_dte']} {day_word} • {res['expiry_str']}"
+        g1.metric("نوع العقد والسترايك", f"{res['option_type'].split()[0]} ${res['strike_rec']}", dte_label)
         g2.metric("سعر العقد التقديري", f"${est_premium:.2f}", f"التكلفة ${contract_cost:.0f} • {premium_badge}")
         g3.metric("الدلتا (Delta Δ)", f"{g['delta']:.2f}", f"الجاما: {g['gamma']:.4f}")
         g4.metric("الثيتا (Theta Θ)", f"-${abs(g['theta_daily'])*100:.2f}/يوم", f"IV: {g['iv_pct']:.1f}%")
