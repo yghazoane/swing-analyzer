@@ -1,7 +1,7 @@
 """
 ================================================================================
 اسم الأداة: محلل العقود والسوينق الاحترافي (Pro Options & Swing Analyzer)
-الإصدار: v2.4.2
+الإصدار: v2.4.3
 الوصف: تحليل هيكلي للأسهم والمؤشرات (بما فيها SPX 500)، تحديد الأهداف بفيبوناتشي
        و ATR، تسعير العقود وحساب اليونانيات، وإدارة حجم العقود مع فلتر ذكي
        للبحث التلقائي عن العقود الرخيصة (< $3.00) حتى على مؤشر SPX.
@@ -21,7 +21,7 @@ import os
 
 # إعدادات الصفحة
 st.set_page_config(
-    page_title="محلل العقود والسوينق الاحترافي v2.4.2",
+    page_title="محلل العقود والسوينق الاحترافي v2.4.3",
     layout="wide",
     initial_sidebar_state="expanded"
 )
@@ -31,16 +31,67 @@ st.markdown(
     """
     <style>
     @import url('https://fonts.googleapis.com/css2?family=Cairo:wght@400;600;700;800&display=swap');
+
+    /* تطبيق الخط العربي دون كسر آلية إغلاق وفتح القائمة الجانبية في Streamlit */
     html, body, [class*="css"], .stMarkdown, p, h1, h2, h3, h4, label, button, [data-testid="stMetric"], [data-testid="stAlert"] {
         font-family: 'Cairo', sans-serif !important;
+    }
+
+    /* ضبط اتجاه RTL للمحتوى الداخلي فقط حتى لا تتداخل القائمة الجانبية عند إغلاقها */
+    [data-testid="stMainBlockContainer"],
+    [data-testid="stSidebarContent"],
+    [data-testid="stAlert"],
+    [data-testid="stExpander"] {
         direction: rtl !important;
         text-align: right !important;
         unicode-bidi: plaintext;
     }
-    [data-testid="stMetricValue"], [data-testid="stMetricDelta"] {
+
+    /* منع اختفاء القائمة الجانبية أو بقاء شريط متداخل عند الإغلاق */
+    section[data-testid="stSidebar"][aria-expanded="false"] {
+        width: 0px !important;
+        min-width: 0px !important;
+        max-width: 0px !important;
+        overflow: hidden !important;
+        transform: translateX(-100%) !important;
+    }
+
+    /* ضبط حجم خطوط البطاقات (Metrics) ومنع قصّ النصوص بـ (...) عند فتح القائمة */
+    [data-testid="stMetric"] {
+        background-color: rgba(128, 128, 128, 0.06);
+        border: 1px solid rgba(128, 128, 128, 0.15);
+        border-radius: 10px;
+        padding: 10px 12px !important;
+        direction: rtl !important;
+        text-align: right !important;
+    }
+    [data-testid="stMetricLabel"] p {
+        font-size: 0.85rem !important;
+        white-space: normal !important;
+        overflow: visible !important;
+    }
+    [data-testid="stMetricValue"] {
+        font-size: 1.32rem !important;
+        font-weight: 700 !important;
+        direction: ltr !important;
+        text-align: right !important;
+        unicode-bidi: isolate;
+    }
+    [data-testid="stMetricValue"] > div {
+        white-space: nowrap !important;
+        overflow: visible !important;
+        text-overflow: unset !important;
+    }
+    [data-testid="stMetricDelta"] {
+        font-size: 0.78rem !important;
         direction: rtl !important;
         text-align: right !important;
         unicode-bidi: isolate;
+    }
+    [data-testid="stMetricDelta"] > div {
+        white-space: normal !important;
+        overflow: visible !important;
+        text-overflow: unset !important;
     }
     </style>
     """,
@@ -622,7 +673,7 @@ def analyze_ticker(symbol, interval, swing_order, pricing_strategy, trading_mode
 
 
 # --- واجهة المستخدم ---
-st.title("📈 محلل العقود والسوينق الاحترافي (v2.4.2)")
+st.title("📈 محلل العقود والسوينق الاحترافي (v2.4.3)")
 st.markdown("منصة تحليلية مصممة بعقلية مضارب العقود: محرك بحث ذكي لإيجاد العقود الرخيصة (< $3.00) حتى على مؤشر SPX.")
 
 # القائمة الجانبية
@@ -699,20 +750,24 @@ with tab1:
         suggested_contracts = max(1, int(max_risk_dollars // risk_per_contract)) if risk_per_contract > 0 else 1
 
         st.markdown("### 🎯 بطاقة العقد المقترح واليونانيات")
-        g1, g2, g3, g4, g5 = st.columns(5)
+        g1, g2, g3 = st.columns(3)
+        g4, g5, g6 = st.columns(3)
 
-        premium_badge = f"ضمن الميزانية (أقل من ${max_contract_price:.1f}) 🟢" if est_premium <= max_contract_price else "أعلى من السقف السعري ⚠️"
+        premium_badge = f"ضمن الميزانية (< ${max_contract_price:.1f}) 🟢" if est_premium <= max_contract_price else "أعلى من السقف ⚠️"
 
         if res['recommended_dte'] == 0:
             dte_label = f"ينتهي اليوم (0DTE) • {res['expiry_str']}"
         else:
             day_word = "يوم" if res['recommended_dte'] in [1, 2] or res['recommended_dte'] > 10 else "أيام"
             dte_label = f"ينتهي بعد {res['recommended_dte']} {day_word} • {res['expiry_str']}"
-        g1.metric("نوع العقد والسترايك", f"{res['option_type'].split()[0]} ${res['strike_rec']}", dte_label)
+
+        opt_dir_ar = "شراء CALL 🟢" if res['is_bullish'] else "بيع PUT 🔴"
+        g1.metric(f"العقد المقترح ({opt_dir_ar})", f"{res['option_type'].split()[0]} ${res['strike_rec']}", dte_label)
         g2.metric("سعر العقد التقديري", f"${est_premium:.2f}", f"التكلفة ${contract_cost:.0f} • {premium_badge}")
-        g3.metric("الدلتا (Delta Δ)", f"{g['delta']:.2f}", f"الجاما: {g['gamma']:.4f}")
-        g4.metric("الثيتا (Theta Θ)", f"-${abs(g['theta_daily'])*100:.2f}/يوم", f"IV: {g['iv_pct']:.1f}%")
-        g5.metric("حجم الصفقة المقترح", f"{suggested_contracts} عقد", f"احتمالية الربح PoP: {g['pop_pct']:.0f}%")
+        g3.metric("حجم الصفقة المقترح", f"{suggested_contracts} عقد", f"احتمالية الربح PoP: {g['pop_pct']:.0f}%")
+        g4.metric("الدلتا (Delta Δ)", f"{g['delta']:.2f}", f"الجاما (Gamma): {g['gamma']:.4f}")
+        g5.metric("الثيتا (Theta Θ)", f"-${abs(g['theta_daily'])*100:.2f} / يوم", f"التقلب الضمني IV: {g['iv_pct']:.1f}%")
+        g6.metric("نقطة التعادل (Breakeven)", f"${g['breakeven']:.2f}", f"مخاطرة الصفقة: ${max_risk_dollars:.0f}")
 
         # شريط نبض السيولة المؤسسية وجدران العقود المفتوحة (OI Walls) + مراقبة السبريد
         st.info(
