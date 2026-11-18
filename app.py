@@ -1,10 +1,12 @@
 """
 ================================================================================
 اسم الأداة: محلل العقود والسوينق الاحترافي (Pro Options & Swing Analyzer)
-الإصدار: v2.4.3
-الوصف: تحليل هيكلي للأسهم والمؤشرات (بما فيها SPX 500)، تحديد الأهداف بفيبوناتشي
-       و ATR، تسعير العقود وحساب اليونانيات، وإدارة حجم العقود مع فلتر ذكي
-       للبحث التلقائي عن العقود الرخيصة (< $3.00) حتى على مؤشر SPX.
+الإصدار: v2.5.0
+الوصف: منصة متكاملة للمضاربة اليومية واللحظية (0DTE Scalping) والسوينق:
+       - اقتناص التقلبات اللحظية على إطارات 1m/5m (EMA9 + Bollinger Squeeze + Volume Spike).
+       - تحديد السعر المستهدف للعقد والانتقاء الذكي باليونانيات (Delta, Theta, IV).
+       - محرك تحليل الأسهم القيادية المتحكمة بالسوق (Market Leaders / Mega-Caps)
+         وقياس مدى تأثيرها الحقيقي على اتجاه المؤشرات (SPX, SPY, QQQ).
 ================================================================================
 """
 
@@ -21,23 +23,21 @@ import os
 
 # إعدادات الصفحة
 st.set_page_config(
-    page_title="محلل العقود والسوينق الاحترافي v2.4.3",
+    page_title="محلل العقود والسوينق الاحترافي v2.5.0",
     layout="wide",
     initial_sidebar_state="expanded"
 )
 
-# تنسيق بصري آمن وخفيف
+# تنسيق بصري آمن وخفيف يمنع تداخل القائمة الجانبية وقصّ الأرقام
 st.markdown(
     """
     <style>
     @import url('https://fonts.googleapis.com/css2?family=Cairo:wght@400;600;700;800&display=swap');
 
-    /* تطبيق الخط العربي دون كسر آلية إغلاق وفتح القائمة الجانبية في Streamlit */
     html, body, [class*="css"], .stMarkdown, p, h1, h2, h3, h4, label, button, [data-testid="stMetric"], [data-testid="stAlert"] {
         font-family: 'Cairo', sans-serif !important;
     }
 
-    /* ضبط اتجاه RTL للمحتوى الداخلي فقط حتى لا تتداخل القائمة الجانبية عند إغلاقها */
     [data-testid="stMainBlockContainer"],
     [data-testid="stSidebarContent"],
     [data-testid="stAlert"],
@@ -47,7 +47,6 @@ st.markdown(
         unicode-bidi: plaintext;
     }
 
-    /* منع اختفاء القائمة الجانبية أو بقاء شريط متداخل عند الإغلاق */
     section[data-testid="stSidebar"][aria-expanded="false"] {
         width: 0px !important;
         min-width: 0px !important;
@@ -56,7 +55,6 @@ st.markdown(
         transform: translateX(-100%) !important;
     }
 
-    /* ضبط حجم خطوط البطاقات (Metrics) ومنع قصّ النصوص بـ (...) عند فتح القائمة */
     [data-testid="stMetric"] {
         background-color: rgba(128, 128, 128, 0.06);
         border: 1px solid rgba(128, 128, 128, 0.15);
@@ -71,7 +69,7 @@ st.markdown(
         overflow: visible !important;
     }
     [data-testid="stMetricValue"] {
-        font-size: 1.32rem !important;
+        font-size: 1.30rem !important;
         font-weight: 700 !important;
         direction: ltr !important;
         text-align: right !important;
@@ -99,6 +97,28 @@ st.markdown(
 )
 
 LOG_FILE = "trade_history.csv"
+
+# أوزان الأسهم القيادية المتحكمة في المؤشرات الأمريكية الرئيسية
+LEADER_WEIGHTS = {
+    "QQQ": {
+        "NVDA": 0.145, "AAPL": 0.140, "MSFT": 0.135, "AMZN": 0.085,
+        "META": 0.075, "GOOGL": 0.080, "AVGO": 0.070, "TSLA": 0.055
+    },
+    "SPX": {
+        "NVDA": 0.072, "AAPL": 0.070, "MSFT": 0.066, "AMZN": 0.041,
+        "META": 0.028, "GOOGL": 0.042, "BRK-B": 0.018, "JPM": 0.016,
+        "XOM": 0.013, "UNH": 0.012
+    },
+    "SPY": {
+        "NVDA": 0.072, "AAPL": 0.070, "MSFT": 0.066, "AMZN": 0.041,
+        "META": 0.028, "GOOGL": 0.042, "BRK-B": 0.018, "JPM": 0.016,
+        "XOM": 0.013, "UNH": 0.012
+    },
+    "DEFAULT": {
+        "NVDA": 0.22, "AAPL": 0.20, "MSFT": 0.20, "AMZN": 0.14,
+        "META": 0.12, "GOOGL": 0.12
+    }
+}
 
 
 def init_trade_log():
@@ -139,17 +159,15 @@ def get_next_valid_option_expiry(base_dt, target_dte, symbol):
     ref_dt = max(base_dt, today_dt)
     target_date = (ref_dt + timedelta(days=target_dte)).date()
 
-    # مؤشرات والأسهم ذات الصلاحيات اليومية (SPY, QQQ, IWM, SPX): أيام التداول الإثنين-الجمعة
     daily_exp_symbols = {"SPX", "SPY", "QQQ", "IWM"}
     if symbol in daily_exp_symbols:
-        while target_date.weekday() >= 5:  # 5 = السبت, 6 = الأحد
+        while target_date.weekday() >= 5:
             target_date += timedelta(days=1)
     else:
-        # باقي الأسهم: عقود أسبوعية تنتهي يوم الجمعة (weekday == 4)
         while target_date.weekday() != 4:
             target_date += timedelta(days=1)
 
-    actual_dte = max(1, (target_date - today_dt.date()).days)
+    actual_dte = max(0, (target_date - today_dt.date()).days)
     return target_date.strftime("%Y-%m-%d"), actual_dte
 
 
@@ -164,7 +182,6 @@ def add_trading_days(start_date, trading_days):
 
 
 def round_to_strike_step(price):
-    """تقريب السترايك لأقرب فئة تداول حقيقية في السوق الأمريكي"""
     if price < 50:
         return round(price * 2) / 2.0
     elif price < 250:
@@ -209,7 +226,6 @@ def calculate_bs_metrics(S, K, T_days, r, sigma, is_call=True):
     vega = (S * norm.pdf(d1) * sqrt_T) / 100.0
     theta_daily = theta_annual / 365.0
 
-    # احتمالية الربح التقريبية (PoP) بناءً على d2 وتكلفة العقد (نقطة التعادل)
     breakeven = (K + price) if is_call else max(K - price, 0.01)
     d2_be = (np.log(S / breakeven) + (r - 0.5 * sigma ** 2) * T) / (sigma * sqrt_T)
     pop_pct = float(norm.cdf(d2_be) * 100.0) if is_call else float(norm.cdf(-d2_be) * 100.0)
@@ -227,30 +243,61 @@ def calculate_bs_metrics(S, K, T_days, r, sigma, is_call=True):
     }
 
 
-def find_budget_strike(S, T_days, r, sigma, is_call, max_premium=2.85):
+def score_option_efficiency(premium, delta, gamma, theta_daily, iv_pct, target_price):
     """
-    خوارزمية بحث تكرارية لإيجاد أول سترايك OTM يكون قسطه النظري أقل من max_premium ($3.00)
-    تعمل بكفاءة حتى على المؤشرات مرتفعة السعر مثل SPX.
+    خوارزمية تقييم كفاءة العقد بالاعتماد على اليونانيات (Delta, Gamma, Theta, IV)
+    والقرب من السعر المستهدف الذي حدده المستخدم.
+    """
+    if premium <= 0.05:
+        return -999.0
+    abs_delta = abs(delta)
+    # نسبة تآكل الثيتا اليومي من قيمة العقد
+    theta_decay_ratio = abs(theta_daily) / premium
+    # مكافأة لقوة الدلتا والجاما وخصم للتآكل السريع أو التضخم المبالغ في IV
+    iv_penalty = max(0.0, (iv_pct - 65.0) * 0.005)
+    # مكافأة للقرب من السعر المستهدف دون تجاوزه
+    price_fit = 1.0 - min(abs(target_price - premium) / max(target_price, 0.5), 1.0)
+    efficiency = (abs_delta * 3.0) + (gamma * 15.0) - (theta_decay_ratio * 1.4) - iv_penalty + (price_fit * 0.8)
+    return float(efficiency)
+
+
+def find_smart_greek_strike(S, T_days, r, sigma, is_call, target_price=2.50):
+    """
+    البحث الذكي عن أفضل سترايك ضمن السعر المستهدف (target_price)
+    بناءً على أعلى كفاءة تجمع بين Delta و Gamma وأقل Theta و IV متوازن.
     """
     step = get_strike_step(S)
-    candidate_k = round_to_strike_step(S)
+    base_k = round_to_strike_step(S)
     direction = 1 if is_call else -1
 
-    best_k = candidate_k
-    for _ in range(120):
-        candidate_k += direction * step
-        if candidate_k <= step:
-            break
-        metrics = calculate_bs_metrics(S, candidate_k, T_days, r, sigma, is_call)
-        best_k = candidate_k
-        if metrics["premium"] <= max_premium:
-            break
+    best_k = base_k
+    best_score = -999.0
+    found_under_target = False
+
+    # مسح نطاق واسع من السترايكات حول السعر الحالي (من ITM قريب إلى OTM بعيد)
+    for offset in range(-8, 125):
+        cand_k = base_k + (offset * direction * step)
+        if cand_k <= step:
+            continue
+        m = calculate_bs_metrics(S, cand_k, T_days, r, sigma, is_call)
+        prem = m["premium"]
+        if prem <= target_price and prem >= 0.15:
+            eff = score_option_efficiency(prem, m["delta"], m["gamma"], m["theta_daily"], m["iv_pct"], target_price)
+            if not found_under_target or eff > best_score:
+                found_under_target = True
+                best_score = eff
+                best_k = cand_k
+        elif not found_under_target:
+            # الاحتفاظ بأقرب عقد للسعر المستهدف كخيار احتياطي
+            if abs(prem - target_price) < abs(calculate_bs_metrics(S, best_k, T_days, r, sigma, is_call)["premium"] - target_price):
+                best_k = cand_k
+
     return float(best_k)
 
 
-@st.cache_data(ttl=60)
+@st.cache_data(ttl=45)
 def fetch_price_history(symbol, period, interval):
-    """جلب البيانات التاريخية مع آلية احتياطية وتوافق مع رمز مؤشر SPX (^GSPC)"""
+    """جلب البيانات التاريخية واللحظية مع توافق رمز مؤشر SPX (^GSPC)"""
     try:
         query_symbol = "^GSPC" if symbol == "SPX" else symbol
         tk = yf.Ticker(query_symbol)
@@ -267,11 +314,10 @@ def fetch_price_history(symbol, period, interval):
         return pd.DataFrame(), str(e)
 
 
-@st.cache_data(ttl=60)
+@st.cache_data(ttl=45)
 def fetch_live_option_hint(symbol, target_dte, is_call, target_strike, budget_mode=False, max_budget=3.0):
-    """جلب أقرب عقد حقيقي من سلسلة الأوبشن الحية مع دعم البحث عن عقد تحت السقف السعري و 0DTE"""
+    """جلب السلسلة الحية للأوبشن مع الانتقاء الذكي المعتمد على Delta و Theta و IV"""
     try:
-        # Yahoo Finance يتيح سلسلة عقود SPX تحت رمز ^SPX أو ^GSPC
         candidates = ["^SPX", "^GSPC"] if symbol == "SPX" else [symbol]
         tk = None
         expirations = ()
@@ -286,7 +332,6 @@ def fetch_live_option_hint(symbol, target_dte, is_call, target_strike, budget_mo
             return None
 
         today = datetime.now().date()
-        # السماح بعقود نفس اليوم (0DTE) إذا كان يوم تداول نشط (>= today)
         valid_exps = [e for e in expirations if datetime.strptime(e, "%Y-%m-%d").date() >= today]
         if not valid_exps:
             valid_exps = list(expirations)
@@ -298,7 +343,6 @@ def fetch_live_option_hint(symbol, target_dte, is_call, target_strike, budget_mo
         calls_df = chain.calls if chain.calls is not None else pd.DataFrame()
         puts_df = chain.puts if chain.puts is not None else pd.DataFrame()
 
-        # حساب نسبة Put/Call (PCR) وجدران العقود المفتوحة (OI Walls) للجلسة
         total_call_oi = float(calls_df['openInterest'].fillna(0).sum()) if not calls_df.empty else 0.0
         total_put_oi = float(puts_df['openInterest'].fillna(0).sum()) if not puts_df.empty else 0.0
         total_call_vol = float(calls_df['volume'].fillna(0).sum()) if not calls_df.empty else 0.0
@@ -322,11 +366,13 @@ def fetch_live_option_hint(symbol, target_dte, is_call, target_strike, budget_mo
         )
 
         if budget_mode:
-            affordable = df_opt[(df_opt['mid_calc'] > 0.15) & (df_opt['mid_calc'] <= max_budget)]
+            affordable = df_opt[(df_opt['mid_calc'] >= 0.15) & (df_opt['mid_calc'] <= max_budget)].copy()
             if not affordable.empty:
-                # اختيار أعلى عقد سيولة وقرباً للسعر ضمن الميزانية (< $3)
-                idx = (affordable['strike'] - target_strike).abs().idxmin()
-                row = affordable.loc[idx]
+                # ترتيب العقود ضمن السعر المحدد بناءً على السيولة والقرب من أفضل سترايك يوناني
+                affordable['dist_score'] = (affordable['strike'] - target_strike).abs()
+                affordable['liq_bonus'] = np.log1p(affordable['volume'].fillna(0) + affordable['openInterest'].fillna(0))
+                affordable['rank'] = affordable['dist_score'] - affordable['liq_bonus'] * 0.5
+                row = affordable.sort_values('rank').iloc[0]
             else:
                 idx = (df_opt['strike'] - target_strike).abs().idxmin()
                 row = df_opt.loc[idx]
@@ -360,9 +406,108 @@ def fetch_live_option_hint(symbol, target_dte, is_call, target_strike, budget_mo
         return None
 
 
-def analyze_ticker(symbol, interval, swing_order, pricing_strategy, trading_mode, max_contract_price=3.0):
+@st.cache_data(ttl=45)
+def analyze_market_leaders(target_symbol):
+    """
+    تحليل الأسهم القيادية المتحكمة بالسوق (Heavyweight Market Leaders)
+    وقياس مدى تأثيرها اللحظي واليومي على حركة المؤشر (SPX, SPY, QQQ).
+    """
+    weights_map = LEADER_WEIGHTS.get(target_symbol, LEADER_WEIGHTS["DEFAULT"])
+    tickers_list = list(weights_map.keys())
     try:
-        period_map = {"5m": "5d", "15m": "1mo", "1h": "3mo", "1d": "1y"}
+        raw = yf.download(tickers_list, period="5d", interval="1d", progress=False, group_by="ticker")
+        intra = yf.download(tickers_list, period="1d", interval="5m", progress=False, group_by="ticker")
+    except Exception:
+        return None
+
+    leader_rows = []
+    weighted_day_impact = 0.0
+    weighted_1h_impact = 0.0
+    total_w = sum(weights_map.values())
+    bullish_count = 0
+    bearish_count = 0
+
+    for sym, w in weights_map.items():
+        try:
+            if isinstance(raw.columns, pd.MultiIndex):
+                df_d = raw[sym].dropna()
+            else:
+                df_d = raw.dropna()
+            if df_d.empty or len(df_d) < 2:
+                continue
+
+            prev_close = float(df_d['Close'].iloc[-2])
+            curr_price = float(df_d['Close'].iloc[-1])
+            day_chg_pct = ((curr_price - prev_close) / prev_close) * 100.0
+
+            # حساب الزخم اللحظي لآخر ساعة (12 شمعة 5 دقائق)
+            intraday_1h_pct = day_chg_pct
+            try:
+                df_i = intra[sym].dropna() if isinstance(intra.columns, pd.MultiIndex) else intra.dropna()
+                if len(df_i) >= 12:
+                    p_1h = float(df_i['Close'].iloc[-12])
+                    p_now = float(df_i['Close'].iloc[-1])
+                    intraday_1h_pct = ((p_now - p_1h) / p_1h) * 100.0
+                    curr_price = p_now
+                    day_chg_pct = ((curr_price - prev_close) / prev_close) * 100.0
+            except Exception:
+                pass
+
+            norm_w = w / total_w
+            impact_pts = day_chg_pct * norm_w
+            weighted_day_impact += impact_pts
+            weighted_1h_impact += intraday_1h_pct * norm_w
+
+            if day_chg_pct > 0.15:
+                bullish_count += 1
+                state = "صاعد بقوة 🟢" if day_chg_pct > 1.0 else "إيجابي 🟢"
+            elif day_chg_pct < -0.15:
+                bearish_count += 1
+                state = "هابط بقوة 🔴" if day_chg_pct < -1.0 else "سلبي 🔴"
+            else:
+                state = "محايد ⚪"
+
+            leader_rows.append({
+                "السهم القيادي": sym,
+                "الوزن النسبي": f"{norm_w*100:.1f}%",
+                "السعر": f"${curr_price:.2f}",
+                "تغير اليوم %": round(day_chg_pct, 2),
+                "زخم آخر ساعة %": round(intraday_1h_pct, 2),
+                "التأثير على المؤشر": round(impact_pts, 3),
+                "الحالة": state
+            })
+        except Exception:
+            continue
+
+    if not leader_rows:
+        return None
+
+    df_leaders = pd.DataFrame(leader_rows).sort_values(by="التأثير على المؤشر", key=abs, ascending=False)
+    total_active = len(leader_rows)
+    if weighted_day_impact > 0.25 and bullish_count >= total_active * 0.6:
+        verdict = f"دعم قيادي صعودي قوي ({bullish_count}/{total_active} قياديات خضراء • زخم +{weighted_day_impact:.2f}%) 🟢"
+    elif weighted_day_impact < -0.25 and bearish_count >= total_active * 0.6:
+        verdict = f"ضغط بيعي قيادي قوي ({bearish_count}/{total_active} قياديات حمراء • زخم {weighted_day_impact:.2f}%) 🔴"
+    elif abs(weighted_day_impact) <= 0.25:
+        verdict = f"تباين قيادي / تذبذب أفقي (صافي التأثير {weighted_day_impact:+.2f}%) ⚖️"
+    else:
+        verdict = f"حركة يقودها سهم أو سهمان فقط (تباعد قيادي • صافي {weighted_day_impact:+.2f}%) ⚠️"
+
+    return {
+        "df": df_leaders,
+        "weighted_day_impact": weighted_day_impact,
+        "weighted_1h_impact": weighted_1h_impact,
+        "bullish_count": bullish_count,
+        "bearish_count": bearish_count,
+        "total_active": total_active,
+        "verdict": verdict
+    }
+
+
+def analyze_ticker(symbol, interval, swing_order, pricing_strategy, trading_mode, target_contract_price=3.0):
+    try:
+        is_scalp_0dte = "0DTE" in trading_mode or "اللحظية" in trading_mode
+        period_map = {"1m": "2d", "5m": "5d", "15m": "1mo", "1h": "3mo", "1d": "1y"}
         period = period_map.get(interval, "1y")
         df, err_msg = fetch_price_history(symbol, period, interval)
         if df is None or df.empty or len(df) < 30:
@@ -370,11 +515,12 @@ def analyze_ticker(symbol, interval, swing_order, pricing_strategy, trading_mode
 
         df = df.copy()
 
-        # المتوسطات المتحركة
+        # المتوسطات المتحركة (بما فيها EMA 9 لاقتناص التقلبات اللحظية)
+        df['EMA9'] = df['Close'].ewm(span=9, adjust=False).mean()
         df['EMA20'] = df['Close'].ewm(span=20, adjust=False).mean()
         df['EMA50'] = df['Close'].ewm(span=50, adjust=False).mean()
 
-        # مؤشر RSI (14) باستخدام تنعيم وايلدر القياسي (Wilder's Smoothing) لمطابقة TradingView ومنصة سهم
+        # مؤشر RSI (14) بتنعيم وايلدر القياسي (Wilder's Smoothing)
         delta_s = df['Close'].diff()
         gain = delta_s.clip(lower=0).ewm(alpha=1/14, min_periods=14, adjust=False).mean()
         loss = (-delta_s.clip(upper=0)).ewm(alpha=1/14, min_periods=14, adjust=False).mean()
@@ -402,14 +548,15 @@ def analyze_ticker(symbol, interval, swing_order, pricing_strategy, trading_mode
 
         # التقلب التاريخي السنوي (HV)
         log_returns = np.log(df['Close'] / df['Close'].shift(1))
-        bars_per_year = {"5m": 252 * 78, "15m": 252 * 26, "1h": 252 * 6.5, "1d": 252}.get(interval, 252)
+        bars_per_year = {"1m": 252 * 390, "5m": 252 * 78, "15m": 252 * 26, "1h": 252 * 6.5, "1d": 252}.get(interval, 252)
         est_vol = float(log_returns.rolling(20).std().iloc[-1] * np.sqrt(bars_per_year))
         if np.isnan(est_vol) or est_vol <= 0.05:
             est_vol = 0.25
 
         # قمم وقيعان السوينق الهيكلية
-        high_idx = argrelextrema(df['High'].values, np.greater_equal, order=swing_order)[0]
-        low_idx = argrelextrema(df['Low'].values, np.less_equal, order=swing_order)[0]
+        eff_order = max(3, swing_order // 2) if is_scalp_0dte else swing_order
+        high_idx = argrelextrema(df['High'].values, np.greater_equal, order=eff_order)[0]
+        low_idx = argrelextrema(df['Low'].values, np.less_equal, order=eff_order)[0]
         df['Swing_High'] = np.nan
         df['Swing_Low'] = np.nan
         df.iloc[high_idx, df.columns.get_loc('Swing_High')] = df['High'].iloc[high_idx]
@@ -420,6 +567,7 @@ def analyze_ticker(symbol, interval, swing_order, pricing_strategy, trading_mode
 
         current_price = float(df['Close'].iloc[-1])
         current_atr = float(df['ATR'].iloc[-1])
+        ema9_val = float(df['EMA9'].iloc[-1])
         ema20_val = float(df['EMA20'].iloc[-1])
         ema50_val = float(df['EMA50'].iloc[-1])
         current_rsi = float(df['RSI'].iloc[-1])
@@ -428,30 +576,33 @@ def analyze_ticker(symbol, interval, swing_order, pricing_strategy, trading_mode
         bb_w = float(df['BB_Width'].iloc[-1])
         bb_w_avg = float(df['BB_Width'].rolling(50, min_periods=10).mean().iloc[-1])
 
-        # تحديد الاتجاه الهيكلي والزخم
-        is_bullish = current_price > ema50_val
+        # تحديد الاتجاه: في وضع 0DTE اللحظي نعتمد على تقاطع EMA9 مع EMA20 والزخم الفوري
+        if is_scalp_0dte:
+            is_bullish = (current_price > ema20_val) and (ema9_val >= ema20_val or macd_val > macd_sig)
+        else:
+            is_bullish = current_price > ema50_val
+
         trend = "صاعد (Bullish) 🟢" if is_bullish else "هابط (Bearish) 🔴"
         option_type = "CALL 🟢 (شراء)" if is_bullish else "PUT 🔴 (بيع)"
 
         # تقييم جودة الإشارة (Confluence Score من 5)
         score = 0
-        if (is_bullish and current_price > ema20_val) or (not is_bullish and current_price < ema20_val):
+        if (is_bullish and current_price > ema9_val and current_price > ema20_val) or (not is_bullish and current_price < ema9_val and current_price < ema20_val):
             score += 1
         if (is_bullish and macd_val > macd_sig) or (not is_bullish and macd_val < macd_sig):
             score += 1
-        if (is_bullish and 45 <= current_rsi <= 68) or (not is_bullish and 32 <= current_rsi <= 55):
+        if (is_bullish and 45 <= current_rsi <= 72) or (not is_bullish and 28 <= current_rsi <= 55):
             score += 1
         is_squeeze = (not np.isnan(bb_w)) and (not np.isnan(bb_w_avg)) and (bb_w < bb_w_avg * 0.85)
         if is_squeeze:
             score += 1
 
-        # فحص تأكيد الكسر (حقيقي أم وهمي) بناءً على إغلاق الشمعة الأخيرة والزخم
         bb_up_val = float(df['BB_Upper'].iloc[-1]) if not np.isnan(df['BB_Upper'].iloc[-1]) else current_price
         bb_low_val = float(df['BB_Lower'].iloc[-1]) if not np.isnan(df['BB_Lower'].iloc[-1]) else current_price
         recent_res = float(last_highs['Swing_High'].iloc[-1]) if len(last_highs) >= 1 else bb_up_val
         recent_sup = float(last_lows['Swing_Low'].iloc[-1]) if len(last_lows) >= 1 else bb_low_val
 
-        # التحقق من حجم التداول وانفجار السيولة (Volume Spike Ratio)
+        # التحقق من حجم التداول وانفجار السيولة اللحظي (Volume Spike Ratio)
         vol_ok = True
         vol_ratio = 1.0
         if 'Volume' in df.columns and df['Volume'].sum() > 0:
@@ -459,25 +610,37 @@ def analyze_ticker(symbol, interval, swing_order, pricing_strategy, trading_mode
             curr_vol = float(df['Volume'].iloc[-1])
             if avg_vol > 0:
                 vol_ratio = curr_vol / avg_vol
-                vol_ok = vol_ratio >= 1.15
+                vol_ok = vol_ratio >= (1.25 if is_scalp_0dte else 1.15)
 
         if is_bullish:
             broke_level = (current_price > recent_res) or (current_price > bb_up_val)
-            momentum_ok = (macd_val > macd_sig) and (current_price > ema20_val)
+            momentum_ok = (macd_val > macd_sig) and (current_price > ema9_val)
         else:
             broke_level = (current_price < recent_sup) or (current_price < bb_low_val)
-            momentum_ok = (macd_val < macd_sig) and (current_price < ema20_val)
+            momentum_ok = (macd_val < macd_sig) and (current_price < ema9_val)
 
         if broke_level and momentum_ok and vol_ok:
-            breakout_status = f"كسر حقيقي مؤكد ({interval} • سيولة {vol_ratio:.1f}x) 🟢"
+            breakout_status = f"انفجار سعري مؤكد ({interval} • سيولة {vol_ratio:.1f}x) 🟢"
             score = min(5, score + 1)
         elif broke_level and (not momentum_ok or not vol_ok):
             breakout_status = f"فخ صانع سوق / كسر وهمي ({interval} • سيولة {vol_ratio:.1f}x) ⚠️"
         else:
-            breakout_status = f"داخل النطاق - بانتظار إغلاق ({interval}) ⏳" 
+            breakout_status = f"ترقب انفجار التقلب ({interval}) ⏳"
 
-        # حساب الأهداف الهيكلية بفيبوناتشي ووقف الخسارة بـ ATR
-        if len(last_highs) >= 1 and len(last_lows) >= 1:
+        # حساب الأهداف ووقف الخسارة (أهداف خاطفة في 0DTE مقابل فيبوناتشي في السوينق)
+        if is_scalp_0dte:
+            wave_bars = 3
+            est_days_t1 = 0
+            est_days_t2 = 0
+            if is_bullish:
+                target_1 = current_price + current_atr * 1.1
+                target_2 = current_price + current_atr * 2.0
+                stop_loss = min(ema20_val - current_atr * 0.3, current_price - current_atr * 0.85)
+            else:
+                target_1 = current_price - current_atr * 1.1
+                target_2 = current_price - current_atr * 2.0
+                stop_loss = max(ema20_val + current_atr * 0.3, current_price + current_atr * 0.85)
+        elif len(last_highs) >= 1 and len(last_lows) >= 1:
             rec_high = float(last_highs['Swing_High'].iloc[-1])
             rec_low = float(last_lows['Swing_Low'].iloc[-1])
             wave_h = max(abs(rec_high - rec_low), current_atr * 1.5)
@@ -504,29 +667,35 @@ def analyze_ticker(symbol, interval, swing_order, pricing_strategy, trading_mode
                 target_2 = current_price - current_atr * 3.2
                 stop_loss = current_price + current_atr * 1.0
 
-        # تحديد الصلاحية الزمنية (DTE) حسب أسلوب المضاربة
-        if "يومي" in trading_mode or interval in ["5m", "15m", "1h"]:
-            est_days_t1 = 1 if interval in ["5m", "15m"] else 2
-            est_days_t2 = 2 if interval == "5m" else (3 if interval == "15m" else 5)
-            recommended_dte = 1 if interval == "5m" else (3 if interval == "15m" else 7)
+        # تحديد الصلاحية الزمنية (DTE)
+        if is_scalp_0dte:
+            est_days_t1 = 0
+            est_days_t2 = 0
+            recommended_dte = 0
+        elif "يومي" in trading_mode or interval in ["1m", "5m", "15m", "1h"]:
+            est_days_t1 = 1 if interval in ["1m", "5m", "15m"] else 2
+            est_days_t2 = 2 if interval in ["1m", "5m"] else (3 if interval == "15m" else 5)
+            recommended_dte = 1 if interval in ["1m", "5m"] else (3 if interval == "15m" else 7)
         else:
             est_days_t1 = max(3, int(wave_bars * 0.8))
             est_days_t2 = max(6, int(wave_bars * 1.3))
             recommended_dte = min(60, max(28, est_days_t2 + 21))
 
-        is_budget_mode = "رخيصة" in pricing_strategy
+        is_target_price_mode = "السعر المستهدف" in pricing_strategy or "رخيصة" in pricing_strategy
 
-        # هندسة السترايك الذكية
-        if is_budget_mode:
-            # للعقود الرخيصة نستخدم صلاحية قصيرة (1-5 أيام) ونبحث عن السترايك الذي يحقق السعر المستهدف
-            recommended_dte = 1 if interval == "5m" else (2 if interval == "15m" else 5)
-            strike_rec = find_budget_strike(
+        # هندسة السترايك الذكية المعتمدة على السعر المراد واليونانيات (Delta / Theta / IV)
+        eff_t_days = 0.25 if recommended_dte == 0 else recommended_dte
+        if is_target_price_mode:
+            if not is_scalp_0dte and recommended_dte > 5:
+                recommended_dte = 1 if interval in ["1m", "5m"] else (2 if interval == "15m" else 5)
+                eff_t_days = recommended_dte
+            strike_rec = find_smart_greek_strike(
                 S=current_price,
-                T_days=recommended_dte,
+                T_days=eff_t_days,
                 r=0.045,
                 sigma=est_vol,
                 is_call=is_bullish,
-                max_premium=max_contract_price * 0.92
+                target_price=target_contract_price
             )
         elif "هجومي" in pricing_strategy:
             raw_strike = current_price + (current_atr * 0.9 if is_bullish else -current_atr * 0.9)
@@ -537,19 +706,16 @@ def analyze_ticker(symbol, interval, swing_order, pricing_strategy, trading_mode
         else:
             strike_rec = round_to_strike_step(current_price)
 
-        # حساب اليونانيات والسعر النظري للعقد
         greeks = calculate_bs_metrics(
-            S=current_price, K=strike_rec, T_days=recommended_dte,
+            S=current_price, K=strike_rec, T_days=eff_t_days,
             r=0.045, sigma=est_vol, is_call=is_bullish
         )
 
-        # محاولة جلب بيانات السلسلة الحية للمقارنة
         live_opt = fetch_live_option_hint(
             symbol, recommended_dte, is_bullish, strike_rec,
-            budget_mode=is_budget_mode, max_budget=max_contract_price
+            budget_mode=is_target_price_mode, max_budget=target_contract_price
         )
 
-        # تحليل السيولة المؤسسية، جدران OI، وفلتر السبريد اللحظي
         spread_status = "غير متوفر (تسعير نظري)"
         oi_wall_note = "بانتظار بيانات السلسلة الحية"
         pcr_note = "متعادل"
@@ -584,13 +750,12 @@ def analyze_ticker(symbol, interval, swing_order, pricing_strategy, trading_mode
             if wall_parts:
                 oi_wall_note = " | ".join(wall_parts)
 
-        # تحديث السترايك والتقلب الضمني (IV) من السلسلة الحية لضمان تطابق التسعير واليونانيات مع منصات التداول
         if live_opt:
             live_iv = (live_opt.get("iv", 0.0) / 100.0)
             effective_sigma = live_iv if live_iv > 0.05 else est_vol
-            if is_budget_mode and 0.15 < live_opt["mid"] <= max_contract_price:
+            if is_target_price_mode and 0.15 <= live_opt["mid"] <= target_contract_price:
                 strike_rec = live_opt["strike"]
-            elif not is_budget_mode:
+            elif not is_target_price_mode:
                 strike_rec = live_opt["strike"]
             greeks = calculate_bs_metrics(
                 S=current_price, K=strike_rec, T_days=max(recommended_dte, 0.25),
@@ -600,15 +765,15 @@ def analyze_ticker(symbol, interval, swing_order, pricing_strategy, trading_mode
         risk_per_share = abs(current_price - stop_loss)
         reward_t1 = abs(target_1 - current_price)
         rr_ratio = reward_t1 / risk_per_share if risk_per_share > 0 else 0
-        if rr_ratio >= 2.0:
-            score += 1
+        if rr_ratio >= 1.8:
+            score = min(5, score + 1)
 
         last_dt = df.index[-1].to_pydatetime() if hasattr(df.index[-1], 'to_pydatetime') else datetime.now()
         if getattr(last_dt, "tzinfo", None) is not None:
             last_dt = last_dt.replace(tzinfo=None)
         ref_base_dt = max(last_dt, datetime.now())
-        date_t1 = add_trading_days(ref_base_dt, est_days_t1).strftime("%Y-%m-%d")
-        date_t2 = add_trading_days(ref_base_dt, est_days_t2).strftime("%Y-%m-%d")
+        date_t1 = "خلال الجلسة (0DTE)" if est_days_t1 == 0 else add_trading_days(ref_base_dt, est_days_t1).strftime("%Y-%m-%d")
+        date_t2 = "خلال الجلسة (0DTE)" if est_days_t2 == 0 else add_trading_days(ref_base_dt, est_days_t2).strftime("%Y-%m-%d")
 
         today_date = datetime.now().date()
         if live_opt and live_opt.get("expiry"):
@@ -622,11 +787,10 @@ def analyze_ticker(symbol, interval, swing_order, pricing_strategy, trading_mode
             expiry_str, recommended_dte = get_next_valid_option_expiry(last_dt, recommended_dte, symbol)
 
         is_weekend = today_date.weekday() >= 5
-        market_note = "السوق مغلق حالياً (عطلة نهاية الأسبوع) • تم ضبط الانتهاء لأقرب جلسة قادمة" if is_weekend else "جلسة التداول نشطة / محدثة" 
+        market_note = "السوق مغلق حالياً (عطلة نهاية الأسبوع) • تم ضبط الانتهاء لأقرب جلسة قادمة" if is_weekend else "جلسة التداول نشطة / محدثة"
 
-        # توحيد السعر المعتمد للعقد بين التحليل التفصيلي والماسح الآلي
-        if is_budget_mode:
-            if live_opt and live_opt.get("has_live_quote") and 0.10 < live_opt["mid"] <= max_contract_price:
+        if is_target_price_mode:
+            if live_opt and live_opt.get("has_live_quote") and 0.10 < live_opt["mid"] <= target_contract_price:
                 display_premium = live_opt["mid"]
             else:
                 display_premium = greeks["premium"]
@@ -636,8 +800,14 @@ def analyze_ticker(symbol, interval, swing_order, pricing_strategy, trading_mode
             else:
                 display_premium = greeks["premium"]
 
+        greek_eff = score_option_efficiency(
+            display_premium, greeks["delta"], greeks["gamma"],
+            greeks["theta_daily"], greeks["iv_pct"], target_contract_price
+        )
+
         return {
             "display_premium": float(display_premium),
+            "greek_eff": greek_eff,
             "df": df,
             "current_price": current_price,
             "current_atr": current_atr,
@@ -673,14 +843,28 @@ def analyze_ticker(symbol, interval, swing_order, pricing_strategy, trading_mode
 
 
 # --- واجهة المستخدم ---
-st.title("📈 محلل العقود والسوينق الاحترافي (v2.4.3)")
-st.markdown("منصة تحليلية مصممة بعقلية مضارب العقود: محرك بحث ذكي لإيجاد العقود الرخيصة (< $3.00) حتى على مؤشر SPX.")
+st.title("📈 محلل العقود والسوينق الاحترافي (v2.5.0)")
+st.markdown("منصة شاملة للمضاربة اللحظية (0DTE Scalping) والسوينق، مع الانتقاء الذكي باليونانيات ورصد تأثير الأسهم القيادية على المؤشرات.")
 
 # القائمة الجانبية
 st.sidebar.header("⚙️ إعدادات التداول")
-trading_mode = st.sidebar.radio("أسلوب المضاربة:", ["مضاربة يومية / قصيرة (Intraday | 1-7 DTE)", "سوينق (Swing | 21-45 DTE)"])
-default_tf_idx = 0 if "يومية" in trading_mode else 3
-interval = st.sidebar.selectbox("الإطار الزمني:", ["5m", "15m", "1h", "1d"], index=default_tf_idx)
+trading_mode = st.sidebar.radio(
+    "أسلوب المضاربة:",
+    [
+        "⚡ اقتناص التقلبات اللحظية (0DTE Scalping)",
+        "🔥 مضاربة يومية / قصيرة (Intraday | 1-7 DTE)",
+        "🌊 سوينق (Swing | 21-45 DTE)"
+    ]
+)
+
+if "0DTE" in trading_mode:
+    default_tf_idx = 1  # 5m
+elif "يومية" in trading_mode:
+    default_tf_idx = 2  # 15m
+else:
+    default_tf_idx = 4  # 1d
+
+interval = st.sidebar.selectbox("الإطار الزمني:", ["1m", "5m", "15m", "1h", "1d"], index=default_tf_idx)
 ticker = st.sidebar.selectbox("الأصل المالي:", ["SPX", "SPY", "QQQ", "IWM", "NVDA", "AAPL", "TSLA", "MSFT", "AMZN", "META", "AMD", "GOOGL", "NFLX"])
 swing_order = st.sidebar.slider("حساسية القمم والقيعان:", min_value=3, max_value=15, value=7)
 
@@ -689,33 +873,34 @@ if st.sidebar.button("🔄 تحديث البيانات ومسح الكاش"):
     st.rerun()
 
 st.sidebar.markdown("---")
-st.sidebar.header("🎯 استراتيجية التسعير والعقود")
+st.sidebar.header("🎯 السعر المستهدف واليونانيات")
 pricing_strategy = st.sidebar.selectbox(
-    "فلتر تصفية العقود:",
+    "آلية اختيار العقد:",
     [
-        "🔥 عقود رخيصة ومضاربية (تحت السقف السعري)",
+        "🎯 السعر المستهدف الذكي (أفضل Delta/Theta ضمن ميزانيتك)",
         "⚖️ متوازن (ATM | Delta ~0.50)",
         "⚡ هجومي (OTM متوسط | Delta ~0.35)",
         "🛡️ تحوطي آمن (ITM | Delta ~0.65)"
     ]
 )
-max_contract_price = st.sidebar.number_input(
-    "الحد الأقصى لسعر العقد ($):",
-    min_value=0.50, max_value=50.0, value=3.00, step=0.50,
-    help="عند تفعيل فلتر العقود الرخيصة، سيبحث النظام عن سترايك سعره أقل من هذا الرقم (مثلاً $3.00 = $300 للعقد)."
+target_contract_price = st.sidebar.number_input(
+    "السعر المراد للعقد ($):",
+    min_value=0.20, max_value=50.0, value=2.50, step=0.10,
+    help="حدد السعر الذي ترغب به للعقد (مثلاً $1.50 أو $2.50)، وسيختار النظام أفضل سترايك يحقق أعلى دلتا وأقل تآكل ثيتا ضمن هذا السعر."
 )
 portfolio_size = st.sidebar.number_input("حجم المحفظة ($):", min_value=1000, value=10000, step=1000)
 risk_pct = st.sidebar.number_input("المخاطرة القصوى للصفقة (%):", min_value=0.5, max_value=5.0, value=1.5, step=0.5)
 contract_sl_pct = st.sidebar.slider("نسبة وقف خسارة العقد (% من القسط):", min_value=20, max_value=60, value=35, step=5)
 
-tab1, tab2, tab3 = st.tabs([
+tab1, tab2, tab3, tab4 = st.tabs([
     "📊 التحليل التفصيلي وبطاقة العقد",
+    "👑 الأسهم القيادية وتأثيرها على المؤشر",
     "🔍 الماسح الآلي للفرص (Screener)",
     "📈 سجل الصفقات والأداء (Journal)"
 ])
 
 with tab1:
-    res, err_detail = analyze_ticker(ticker, interval, swing_order, pricing_strategy, trading_mode, max_contract_price)
+    res, err_detail = analyze_ticker(ticker, interval, swing_order, pricing_strategy, trading_mode, target_contract_price)
     if res is None:
         st.warning(f"⚠️ تعذر جلب بيانات كافية للرمز ({ticker}) على الإطار ({interval}).")
         if err_detail:
@@ -728,7 +913,7 @@ with tab1:
         st.info(
             f"**الأصل:** {ticker} ({interval}) &nbsp;|&nbsp; "
             f"**الاتجاه:** {res['trend']} &nbsp;|&nbsp; "
-            f"**حالة الكسر:** {res['breakout_status']} &nbsp;|&nbsp; "
+            f"**حالة التقلب:** {res['breakout_status']} &nbsp;|&nbsp; "
             f"**التوافق:** {res['score']} من 5 ⭐ &nbsp;|&nbsp; "
             f"**الزخم (MACD):** {res['macd_status']} &nbsp;|&nbsp; "
             f"**البولنجر:** {res['bb_status']}"
@@ -738,12 +923,11 @@ with tab1:
 
         c1, c2, c3, c4 = st.columns(4)
         c1.metric("السعر الحالي", f"${res['current_price']:.2f}", f"ATR: ${res['current_atr']:.2f}")
-        c2.metric("الهدف الأول (1.272)", f"${res['target_1']:.2f}", f"متوقع: {res['date_t1']}")
-        c3.metric("الهدف الثاني (1.618)", f"${res['target_2']:.2f}", f"متوقع: {res['date_t2']}")
+        c2.metric("الهدف الأول", f"${res['target_1']:.2f}", f"التوقيت: {res['date_t1']}")
+        c3.metric("الهدف الثاني", f"${res['target_2']:.2f}", f"التوقيت: {res['date_t2']}")
         c4.metric("وقف الخسارة (للسهم)", f"${res['stop_loss']:.2f}", f"R:R = 1 : {res['rr_ratio']:.2f}")
 
         est_premium = res["display_premium"]
-
         contract_cost = est_premium * 100.0
         max_risk_dollars = portfolio_size * (risk_pct / 100.0)
         risk_per_contract = contract_cost * (contract_sl_pct / 100.0)
@@ -753,7 +937,7 @@ with tab1:
         g1, g2, g3 = st.columns(3)
         g4, g5, g6 = st.columns(3)
 
-        premium_badge = f"ضمن الميزانية (< ${max_contract_price:.1f}) 🟢" if est_premium <= max_contract_price else "أعلى من السقف ⚠️"
+        premium_badge = f"مطابق للسعر المراد (≤ ${target_contract_price:.2f}) 🟢" if est_premium <= target_contract_price else "أعلى من السعر المراد ⚠️"
 
         if res['recommended_dte'] == 0:
             dte_label = f"ينتهي اليوم (0DTE) • {res['expiry_str']}"
@@ -767,26 +951,28 @@ with tab1:
         g3.metric("حجم الصفقة المقترح", f"{suggested_contracts} عقد", f"احتمالية الربح PoP: {g['pop_pct']:.0f}%")
         g4.metric("الدلتا (Delta Δ)", f"{g['delta']:.2f}", f"الجاما (Gamma): {g['gamma']:.4f}")
         g5.metric("الثيتا (Theta Θ)", f"-${abs(g['theta_daily'])*100:.2f} / يوم", f"التقلب الضمني IV: {g['iv_pct']:.1f}%")
-        g6.metric("نقطة التعادل (Breakeven)", f"${g['breakeven']:.2f}", f"مخاطرة الصفقة: ${max_risk_dollars:.0f}")
+        g6.metric("نقطة التعادل (Breakeven)", f"${g['breakeven']:.2f}", f"كفاءة اليونانيات: {res['greek_eff']:.2f}")
 
-        # شريط نبض السيولة المؤسسية وجدران العقود المفتوحة (OI Walls) + مراقبة السبريد
         st.info(
             f"🏛️ **النبض المؤسسي (OI & PCR):** {res['pcr_note']} &nbsp;|&nbsp; "
             f"**جدران السترايكات:** {res['oi_wall_note']} &nbsp;|&nbsp; "
             f"**فلتر السبريد اللحظي:** {res['spread_status']}"
         )
 
-        # خريطة إدارة الصفقة وجني الأرباح الجزئي وتآكل الوقت (Theta Matrix)
+        # عرض نبض الأسهم القيادية مباشرة أسفل البطاقة عند تحليل المؤشرات
+        leaders_quick = analyze_market_leaders(ticker if ticker in ["SPX", "SPY", "QQQ"] else "SPX")
+        if leaders_quick:
+            st.success(f"👑 **نبض الأسهم القيادية المتحكمة بالسوق ({ticker if ticker in ['SPX', 'SPY', 'QQQ'] else 'SPX'}):** {leaders_quick['verdict']}")
+
         with st.expander("🧭 خريطة إدارة الصفقة المفتوحة (جني الأرباح الجزئي وتآكل الثيتا)", expanded=False):
             move_t1 = abs(res['target_1'] - res['current_price'])
             move_t2 = abs(res['target_2'] - res['current_price'])
-            # تقدير ربح العقد عند الهدف 1 والهدف 2 باستخدام دلتا وجاما
             est_gain_t1 = abs(g['delta']) * move_t1 + 0.5 * g['gamma'] * (move_t1 ** 2)
             est_gain_t2 = abs(g['delta']) * move_t2 + 0.5 * g['gamma'] * (move_t2 ** 2)
             opt_price_t1 = est_premium + est_gain_t1
             opt_price_t2 = est_premium + est_gain_t2
             opt_sl_price = est_premium * (1.0 - contract_sl_pct / 100.0)
-            theta_2h_loss = (abs(g['theta_daily']) * 100.0) * (2.0 / 6.5)  # تآكل ساعتين من جلسة 6.5 ساعات
+            theta_2h_loss = (abs(g['theta_daily']) * 100.0) * (2.0 / 6.5)
             half_contracts = max(1, suggested_contracts // 2)
 
             m1, m2, m3, m4 = st.columns(4)
@@ -822,7 +1008,7 @@ with tab1:
         if st.button(f"📌 تسجيل صفقة {ticker} في سجل الأداء"):
             opt_dir = "CALL" if res["is_bullish"] else "PUT"
             log_new_trade(
-                ticker, trading_mode.split()[0], opt_dir, res["strike_rec"],
+                ticker, trading_mode.split()[1], opt_dir, res["strike_rec"],
                 res["expiry_str"], est_premium, res["stop_loss"], res["target_1"], suggested_contracts
             )
             st.success("تم حفظ الصفقة بكامل تفاصيلها في تبويب سجل الصفقات!")
@@ -830,13 +1016,14 @@ with tab1:
         fig = make_subplots(
             rows=3, cols=1, shared_xaxes=True, vertical_spacing=0.03,
             row_heights=[0.60, 0.20, 0.20],
-            subplot_titles=(f"هيكل السعر ومستويات فيبوناتشي لـ {ticker}", "مؤشر القوة النسبية RSI (14)", "مؤشر الزخم MACD")
+            subplot_titles=(f"هيكل السعر ومستويات التقلب لـ {ticker}", "مؤشر القوة النسبية RSI (14)", "مؤشر الزخم MACD")
         )
         fig.add_trace(go.Candlestick(
             x=df.index, open=df['Open'], high=df['High'], low=df['Low'], close=df['Close'], name="السعر"
         ), row=1, col=1)
         fig.add_trace(go.Scatter(x=df.index, y=df['BB_Upper'], line=dict(color='rgba(56,189,248,0.4)', width=1, dash='dash'), name="BB Upper"), row=1, col=1)
         fig.add_trace(go.Scatter(x=df.index, y=df['BB_Lower'], line=dict(color='rgba(56,189,248,0.4)', width=1, dash='dash'), fill='tonexty', fillcolor='rgba(56,189,248,0.05)', name="BB Lower"), row=1, col=1)
+        fig.add_trace(go.Scatter(x=df.index, y=df['EMA9'], line=dict(color='#10B981', width=1.2, dash='dot'), name="EMA 9 (لحظي)"), row=1, col=1)
         fig.add_trace(go.Scatter(x=df.index, y=df['EMA20'], line=dict(color='#38BDF8', width=1.4), name="EMA 20"), row=1, col=1)
         fig.add_trace(go.Scatter(x=df.index, y=df['EMA50'], line=dict(color='#F59E0B', width=1.8), name="EMA 50"), row=1, col=1)
         fig.add_trace(go.Scatter(x=df.index, y=df['Swing_High'], mode='markers', marker=dict(color='#EF4444', size=8, symbol='triangle-down'), name="قمة"), row=1, col=1)
@@ -858,7 +1045,39 @@ with tab1:
         st.plotly_chart(fig, use_container_width=True)
 
 with tab2:
-    st.subheader("🔍 الماسح الآلي للفرص (المضاربة اليومية والسوينق)")
+    st.subheader("👑 رادار الأسهم القيادية المتحكمة بالسوق وتأثيرها على المؤشر")
+    target_idx_leader = st.selectbox("اختر المؤشر لقياس تأثير قيادياته:", ["SPX", "SPY", "QQQ"], index=0)
+    leaders_data = analyze_market_leaders(target_idx_leader)
+    if leaders_data:
+        st.info(f"**الخلاصة القيادية لمؤشر {target_idx_leader}:** {leaders_data['verdict']}")
+        l1, l2, l3, l4 = st.columns(4)
+        l1.metric("صافي التأثير الموزون اليوم", f"{leaders_data['weighted_day_impact']:+.2f}%", "تأثير الأوزان الكبرى")
+        l2.metric("زخم القياديات (آخر ساعة)", f"{leaders_data['weighted_1h_impact']:+.2f}%", "نبض السيولة اللحظي")
+        l3.metric("القياديات الصاعدة 🟢", f"{leaders_data['bullish_count']} من {leaders_data['total_active']}", "تدعم الصعود")
+        l4.metric("القياديات الهابطة 🔴", f"{leaders_data['bearish_count']} من {leaders_data['total_active']}", "تضغط للهبوط")
+
+        df_l = leaders_data["df"]
+        fig_l = go.Figure(go.Bar(
+            x=df_l["التأثير على المؤشر"],
+            y=df_l["السهم القيادي"],
+            orientation='h',
+            marker_color=['#10B981' if v >= 0 else '#EF4444' for v in df_l["التأثير على المؤشر"]],
+            text=[f"{v:+.3f}%" for v in df_l["التأثير على المؤشر"]],
+            textposition="auto"
+        ))
+        fig_l.update_layout(
+            title=f"مساهمة كل سهم قيادي في حركة مؤشر {target_idx_leader} (Weighted Impact %)",
+            height=380,
+            yaxis=dict(autorange="reversed"),
+            margin=dict(t=40, b=20)
+        )
+        st.plotly_chart(fig_l, use_container_width=True)
+        st.dataframe(df_l, use_container_width=True, hide_index=True)
+    else:
+        st.warning("تعذر جلب بيانات الأسهم القيادية حالياً.")
+
+with tab3:
+    st.subheader("🔍 الماسح الآلي للفرص (0DTE اللحظي / اليومي / السوينق)")
     watchlist = st.multiselect(
         "اختر قائمة الأسهم والمؤشرات للفحص:",
         ["SPX", "SPY", "QQQ", "IWM", "NVDA", "AAPL", "TSLA", "MSFT", "AMZN", "META", "AMD", "GOOGL", "NFLX"],
@@ -868,7 +1087,7 @@ with tab2:
         rows = []
         prog = st.progress(0)
         for idx, sym in enumerate(watchlist):
-            d, _ = analyze_ticker(sym, interval, swing_order, pricing_strategy, trading_mode, max_contract_price)
+            d, _ = analyze_ticker(sym, interval, swing_order, pricing_strategy, trading_mode, target_contract_price)
             if d:
                 g = d["greeks"]
                 rows.append({
@@ -880,13 +1099,13 @@ with tab2:
                     "Strike": f"${d['strike_rec']}",
                     "قسط تقديري": f"${d['display_premium']:.2f}",
                     "Delta Δ": f"{g['delta']:.2f}",
+                    "كفاءة اليونانيات": f"{d['greek_eff']:.2f}",
                     "احتمالية PoP": f"{g['pop_pct']:.0f}%",
                     "Theta/يوم": f"-${abs(g['theta_daily'])*100:.1f}",
-                    "MACD": d['macd_status'],
                     "البولنجر": d['bb_status'],
                     "الهدف 1": f"${d['target_1']:.2f}",
                     "وقف السهم": f"${d['stop_loss']:.2f}",
-                    "DTE": f"{d['recommended_dte']} يوم",
+                    "DTE": "0DTE (اليوم)" if d['recommended_dte'] == 0 else f"{d['recommended_dte']} يوم",
                     "R:R": f"1 : {d['rr_ratio']:.2f}"
                 })
             prog.progress((idx + 1) / len(watchlist))
@@ -897,7 +1116,7 @@ with tab2:
         else:
             st.warning("لم يتم العثور على بيانات كافية.")
 
-with tab3:
+with tab4:
     st.subheader("📈 سجل تتبع الصفقات والأداء (Trade Journal)")
     init_trade_log()
     history_df = pd.read_csv(LOG_FILE)
