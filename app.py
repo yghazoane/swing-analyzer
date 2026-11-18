@@ -1,12 +1,14 @@
 """
 ================================================================================
 اسم الأداة: محلل العقود والسوينق الاحترافي (Pro Options & Swing Analyzer)
-الإصدار: v2.5.5
-الوصف: منصة متكاملة للمضاربة اليومية واللحظية (0DTE Scalping) والسوينق:
-       - اقتناص التقلبات اللحظية على إطارات 1m/5m (EMA9 + Bollinger Squeeze + Volume Spike).
-       - تحديد السعر المستهدف للعقد والانتقاء الذكي باليونانيات (Delta, Theta, IV).
-       - محرك تحليل الأسهم القيادية المتحكمة بالسوق (Market Leaders / Mega-Caps)
-         وقياس مدى تأثيرها الحقيقي على اتجاه المؤشرات (SPX, SPY, QQQ).
+الإصدار: v2.6.0
+الوصف: منصة متكاملة للمضاربة اللحظية (0DTE Scalping) واليومية والسوينق:
+       - التزامن الدقيق مع توقيت السوق الأمريكي (EST/EDT) واكتشاف إغلاق السوق تلقائياً
+         لترحيل عقود 0DTE إلى الجلسة النشطة القادمة بدلاً من عرض عقود منتهية.
+       - مطابقة تواريخ الانتهاء الفعلية 100% من سلسلة عقود البورصة الحية (مثل 17 يناير
+         بدلاً من التواريخ التقديرية غير الموجودة في المنصات).
+       - محرك تسعير هجين دقيق يعالج تصفير عروض Bid/Ask بعد إغلاق السوق الأمريكي
+         ويمنع تضارب الأسعار عند التنقل بين استراتيجيات المضاربة.
 ================================================================================
 """
 
@@ -18,12 +20,13 @@ import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 from scipy.signal import argrelextrema
 from scipy.stats import norm
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, time
+from zoneinfo import ZoneInfo
 import os
 
 # إعدادات الصفحة
 st.set_page_config(
-    page_title="محلل العقود والسوينق الاحترافي v2.5.5",
+    page_title="محلل العقود والسوينق الاحترافي v2.6.0",
     layout="wide",
     initial_sidebar_state="expanded"
 )
@@ -97,6 +100,7 @@ st.markdown(
 )
 
 LOG_FILE = "trade_history.csv"
+US_TZ = ZoneInfo("America/New_York")
 
 # أوزان الأسهم القيادية المتحكمة في المؤشرات الأمريكية الرئيسية
 LEADER_WEIGHTS = {
@@ -119,6 +123,48 @@ LEADER_WEIGHTS = {
         "META": 0.12, "GOOGL": 0.12
     }
 }
+
+
+def get_us_market_status():
+    """
+    فحص حالة السوق الأمريكي بدقة وفق توقيت نيويورك (America/New_York):
+    - الجلسة الرسمية: الإثنين إلى الجمعة من 09:30 صباحاً حتى 16:00 مساءً بتوقيت نيويورك.
+    - تحديد تاريخ الجلسة النشطة القادمة (active_session_date) لتجنب اختيار عقود منتهية بعد الإغلاق.
+    """
+    now_us = datetime.now(US_TZ)
+    wd = now_us.weekday()  # 0=Mon ... 4=Fri, 5=Sat, 6=Sun
+    t_now = now_us.time()
+    market_open = time(9, 30)
+    market_close = time(16, 0)
+
+    if wd < 5 and market_open <= t_now < market_close:
+        is_open = True
+        status_label = "السوق الأمريكي مفتوح الآن (جلسة تداول حية) 🟢"
+        active_date = now_us.date()
+    else:
+        is_open = False
+        if wd == 5:  # السبت
+            active_date = now_us.date() + timedelta(days=2)
+            status_label = "السوق مغلق (عطلة نهاية الأسبوع) • أقرب جلسة: الإثنين 🔴"
+        elif wd == 6:  # الأحد
+            active_date = now_us.date() + timedelta(days=1)
+            status_label = "السوق مغلق (عطلة نهاية الأسبوع) • أقرب جلسة: الإثنين 🔴"
+        elif t_now >= market_close:
+            # بعد إغلاق الساعة 4:00 عصراً بتوقيت نيويورك -> الجلسة القادمة هي يوم العمل التالي
+            days_to_add = 3 if wd == 4 else 1
+            active_date = now_us.date() + timedelta(days=days_to_add)
+            status_label = f"السوق الأمريكي مغلق حالياً (بعد الإغلاق) • تم ترحيل العقود لجلسة {active_date.strftime('%Y-%m-%d')} 🔴"
+        else:
+            # قبل الافتتاح (Pre-Market) -> الجلسة هي نفس اليوم
+            active_date = now_us.date()
+            status_label = f"السوق مغلق (ما قبل الافتتاح Pre-Market) • جلسة اليوم {active_date.strftime('%Y-%m-%d')} 🟡"
+
+    return {
+        "is_open": is_open,
+        "now_us": now_us,
+        "active_date": active_date,
+        "status_label": status_label
+    }
 
 
 def init_trade_log():
@@ -153,21 +199,24 @@ def log_new_trade(ticker, style, opt_type, strike, expiry, premium, stop_u, targ
     df.to_csv(LOG_FILE, index=False)
 
 
-def get_next_valid_option_expiry(base_dt, target_dte, symbol):
-    """تحديد أقرب تاريخ انتهاء تداول حقيقي (تجنب عطلة نهاية الأسبوع السبت والأحد)"""
-    today_dt = datetime.now()
-    ref_dt = max(base_dt, today_dt)
-    target_date = (ref_dt + timedelta(days=target_dte)).date()
+def get_next_valid_option_expiry(active_session_date, target_dte, symbol):
+    """
+    حساب أقرب تاريخ انتهاء تداول حقيقي (تجنب تواريخ غير موجودة في البورصة):
+    - للمؤشرات اليومية (SPX, SPY, QQQ, IWM): أيام التداول من الإثنين إلى الجمعة.
+    - للأسهم وعقود السوينق: أيام الجمعة (Friday Expirations) المطابقة لسلاسل البورصة.
+    """
+    target_date = active_session_date + timedelta(days=target_dte)
 
     daily_exp_symbols = {"SPX", "SPY", "QQQ", "IWM"}
-    if symbol in daily_exp_symbols:
+    if symbol in daily_exp_symbols and target_dte <= 7:
         while target_date.weekday() >= 5:
             target_date += timedelta(days=1)
     else:
+        # عقود السوينق والأسهم تنتهي دائماً يوم الجمعة في البورصة الأمريكية
         while target_date.weekday() != 4:
             target_date += timedelta(days=1)
 
-    actual_dte = max(0, (target_date - today_dt.date()).days)
+    actual_dte = max(0, (target_date - active_session_date).days)
     return target_date.strftime("%Y-%m-%d"), actual_dte
 
 
@@ -204,9 +253,9 @@ def get_strike_step(price):
 
 
 def calculate_bs_metrics(S, K, T_days, r, sigma, is_call=True):
-    """حساب السعر النظري للعقد واليونانيات الكاملة (Delta, Gamma, Theta, Vega)"""
-    T = max(T_days / 365.0, 1e-5)
-    sigma = max(sigma, 0.10)
+    """حساب السعر النظري العادل للعقد واليونانيات الكاملة (Delta, Gamma, Theta, Vega)"""
+    T = max(T_days / 365.0, 1e-4)
+    sigma = max(sigma, 0.12)
     sqrt_T = np.sqrt(T)
     d1 = (np.log(S / K) + (r + 0.5 * sigma ** 2) * T) / (sigma * sqrt_T)
     d2 = d1 - sigma * sqrt_T
@@ -244,28 +293,17 @@ def calculate_bs_metrics(S, K, T_days, r, sigma, is_call=True):
 
 
 def score_option_efficiency(premium, delta, gamma, theta_daily, iv_pct, target_price):
-    """
-    خوارزمية تقييم كفاءة العقد بالاعتماد على اليونانيات (Delta, Gamma, Theta, IV)
-    والقرب من السعر المستهدف الذي حدده المستخدم.
-    """
     if premium <= 0.05:
         return -999.0
     abs_delta = abs(delta)
-    # نسبة تآكل الثيتا اليومي من قيمة العقد
     theta_decay_ratio = abs(theta_daily) / premium
-    # مكافأة لقوة الدلتا والجاما وخصم للتآكل السريع أو التضخم المبالغ في IV
     iv_penalty = max(0.0, (iv_pct - 65.0) * 0.005)
-    # مكافأة للقرب من السعر المستهدف دون تجاوزه
     price_fit = 1.0 - min(abs(target_price - premium) / max(target_price, 0.5), 1.0)
     efficiency = (abs_delta * 3.0) + (gamma * 15.0) - (theta_decay_ratio * 1.4) - iv_penalty + (price_fit * 0.8)
     return float(efficiency)
 
 
 def find_smart_greek_strike(S, T_days, r, sigma, is_call, target_price=2.50):
-    """
-    البحث الذكي عن أفضل سترايك ضمن السعر المستهدف (target_price)
-    بناءً على أعلى كفاءة تجمع بين Delta و Gamma وأقل Theta و IV متوازن.
-    """
     step = get_strike_step(S)
     base_k = round_to_strike_step(S)
     direction = 1 if is_call else -1
@@ -274,21 +312,19 @@ def find_smart_greek_strike(S, T_days, r, sigma, is_call, target_price=2.50):
     best_score = -999.0
     found_under_target = False
 
-    # مسح نطاق واسع من السترايكات حول السعر الحالي (من ITM قريب إلى OTM بعيد)
-    for offset in range(-8, 125):
+    for offset in range(-10, 140):
         cand_k = base_k + (offset * direction * step)
         if cand_k <= step:
             continue
         m = calculate_bs_metrics(S, cand_k, T_days, r, sigma, is_call)
         prem = m["premium"]
-        if prem <= target_price and prem >= 0.15:
+        if 0.10 <= prem <= target_price:
             eff = score_option_efficiency(prem, m["delta"], m["gamma"], m["theta_daily"], m["iv_pct"], target_price)
             if not found_under_target or eff > best_score:
                 found_under_target = True
                 best_score = eff
                 best_k = cand_k
         elif not found_under_target:
-            # الاحتفاظ بأقرب عقد للسعر المستهدف كخيار احتياطي
             if abs(prem - target_price) < abs(calculate_bs_metrics(S, best_k, T_days, r, sigma, is_call)["premium"] - target_price):
                 best_k = cand_k
 
@@ -315,8 +351,14 @@ def fetch_price_history(symbol, period, interval):
 
 
 @st.cache_data(ttl=45)
-def fetch_live_option_hint(symbol, target_dte, is_call, target_strike, budget_mode=False, max_budget=3.0):
-    """جلب السلسلة الحية للأوبشن مع الانتقاء الذكي المعتمد على Delta و Theta و IV"""
+def fetch_live_option_hint(symbol, target_dte, is_call, target_strike, active_session_date, is_market_open, budget_mode=False, max_budget=3.0):
+    """
+    جلب السلسلة الحية للأوبشن من البورصة مباشرة:
+    1. مطابقة تاريخ الانتهاء الفعلي الموجود في البورصة (tk.options) فقط، بدءاً من active_session_date
+       بحيث لا يعرض عقوداً منتهية إذا كان السوق مغلقاً، ولا يعرض تواريخ غير موجودة في المنصة.
+    2. معالجة ذكية للأسعار عند إغلاق السوق (حيث تصبح عروض Bid/Ask صفراً في Yahoo Finance)
+       عبر استخدام آخر سعر تداول فعلي (lastPrice) أو السعر العادل المحسوب بدقة.
+    """
     try:
         candidates = ["^SPX", "^GSPC"] if symbol == "SPX" else [symbol]
         tk = None
@@ -331,13 +373,16 @@ def fetch_live_option_hint(symbol, target_dte, is_call, target_strike, budget_mo
         if not expirations or tk is None:
             return None
 
-        today = datetime.now().date()
-        valid_exps = [e for e in expirations if datetime.strptime(e, "%Y-%m-%d").date() >= today]
+        # تصفية التواريخ لتبدأ من تاريخ الجلسة النشطة (active_session_date) وليس تاريخاً منتهياً
+        valid_exps = [e for e in expirations if datetime.strptime(e, "%Y-%m-%d").date() >= active_session_date]
+        if not valid_exps:
+            valid_exps = [e for e in expirations if datetime.strptime(e, "%Y-%m-%d").date() >= datetime.now(US_TZ).date()]
         if not valid_exps:
             valid_exps = list(expirations)
+
         best_exp = min(
             valid_exps,
-            key=lambda x: abs((datetime.strptime(x, "%Y-%m-%d").date() - today).days - target_dte)
+            key=lambda x: abs((datetime.strptime(x, "%Y-%m-%d").date() - active_session_date).days - target_dte)
         )
         chain = tk.option_chain(best_exp)
         calls_df = chain.calls if chain.calls is not None else pd.DataFrame()
@@ -359,16 +404,26 @@ def fetch_live_option_hint(symbol, target_dte, is_call, target_strike, budget_mo
             return None
 
         df_opt = df_opt.copy()
-        df_opt['mid_calc'] = np.where(
-            (df_opt['bid'] > 0) & (df_opt['ask'] > 0),
-            (df_opt['bid'] + df_opt['ask']) / 2.0,
-            np.where(df_opt['ask'] > 0, df_opt['ask'] * 0.90, df_opt['lastPrice'])
+        df_opt['bid_f'] = df_opt['bid'].fillna(0).astype(float)
+        df_opt['ask_f'] = df_opt['ask'].fillna(0).astype(float)
+        df_opt['last_f'] = df_opt['lastPrice'].fillna(0).astype(float)
+
+        # حساب السعر الفعلي لكل عقد في السلسلة:
+        # إذا كان السوق مفتوحاً وتتوفر عروض Bid/Ask حية -> نأخذ المنتصف (Mid)
+        # إذا كان السوق مغلقاً (Bid=0 و Ask=0) -> نعتمد lastPrice الحقيقي من آخر إغلاق جلسة
+        df_opt['true_price'] = np.where(
+            (df_opt['bid_f'] > 0) & (df_opt['ask_f'] > 0),
+            (df_opt['bid_f'] + df_opt['ask_f']) / 2.0,
+            np.where(
+                df_opt['ask_f'] > 0,
+                df_opt['ask_f'],
+                df_opt['last_f']
+            )
         )
 
         if budget_mode:
-            affordable = df_opt[(df_opt['mid_calc'] >= 0.15) & (df_opt['mid_calc'] <= max_budget)].copy()
+            affordable = df_opt[(df_opt['true_price'] >= 0.10) & (df_opt['true_price'] <= max_budget)].copy()
             if not affordable.empty:
-                # ترتيب العقود ضمن السعر المحدد بناءً على السيولة والقرب من أفضل سترايك يوناني
                 affordable['dist_score'] = (affordable['strike'] - target_strike).abs()
                 affordable['liq_bonus'] = np.log1p(affordable['volume'].fillna(0) + affordable['openInterest'].fillna(0))
                 affordable['rank'] = affordable['dist_score'] - affordable['liq_bonus'] * 0.5
@@ -380,31 +435,27 @@ def fetch_live_option_hint(symbol, target_dte, is_call, target_strike, budget_mo
             idx = (df_opt['strike'] - target_strike).abs().idxmin()
             row = df_opt.loc[idx]
 
-        bid = float(row.get('bid', 0) or 0)
-        ask = float(row.get('ask', 0) or 0)
-        last_p = float(row.get('lastPrice', 0) or 0)
-        
-        # الذكاء الاصطناعي لتسعير عقود 0DTE و OTM البعيدة:
-        # إذا كان العقد 0DTE أو بعيد عن السعر (OTM) وكان الـ Bid صفراً والـ Ask منخفضاً (<= 0.10) أو غير متوفر، 
-        # فإن سعر السوق الحقيقي للتنفيذ الفوري هو 0.05 (مطابق لمنصة سهم تماماً).
-        strike_val = float(row.get('strike', 0))
-        is_otm_contract = (is_call and strike_val > target_strike) or (not is_call and strike_val < target_strike)
-        
-        if bid == 0 and (ask <= 0.10 or last_p > 0.50):
-            mid = 0.05 if ask <= 0.10 else min(ask if ask > 0 else 0.05, 0.05)
-            has_live_quote = True
-        elif bid > 0 and ask > 0:
+        bid = float(row['bid_f'])
+        ask = float(row['ask_f'])
+        last_p = float(row['last_f'])
+        true_p = float(row['true_price'])
+
+        if bid > 0 and ask > 0:
             mid = (bid + ask) / 2.0
             has_live_quote = True
+            price_source = "عروض Bid/Ask حية 🟢"
         elif ask > 0:
             mid = ask
             has_live_quote = True
-        elif bid > 0:
-            mid = bid
-            has_live_quote = True
-        else:
-            mid = 0.05 if is_otm_contract else last_p
+            price_source = "سعر الطلب الحي (Ask) 🟢"
+        elif last_p > 0:
+            mid = last_p
             has_live_quote = False
+            price_source = "آخر سعر تنفيذ (إغلاق الجلسة) 🟡"
+        else:
+            mid = true_p
+            has_live_quote = False
+            price_source = "تسعير نظري (Black-Scholes) ⚪"
 
         spread_pct = ((ask - bid) / ask * 100) if (bid > 0 and ask > 0) else 0.0
         return {
@@ -412,8 +463,10 @@ def fetch_live_option_hint(symbol, target_dte, is_call, target_strike, budget_mo
             "strike": float(row['strike']),
             "bid": bid,
             "ask": ask,
+            "last": last_p,
             "mid": mid,
             "has_live_quote": has_live_quote,
+            "price_source": price_source,
             "spread_pct": spread_pct,
             "volume": int(row.get('volume', 0) or 0),
             "oi": int(row.get('openInterest', 0) or 0),
@@ -429,10 +482,6 @@ def fetch_live_option_hint(symbol, target_dte, is_call, target_strike, budget_mo
 
 @st.cache_data(ttl=45)
 def analyze_market_leaders(target_symbol):
-    """
-    تحليل الأسهم القيادية المتحكمة بالسوق (Heavyweight Market Leaders)
-    وقياس مدى تأثيرها اللحظي واليومي على حركة المؤشر (SPX, SPY, QQQ).
-    """
     weights_map = LEADER_WEIGHTS.get(target_symbol, LEADER_WEIGHTS["DEFAULT"])
     tickers_list = list(weights_map.keys())
     try:
@@ -461,7 +510,6 @@ def analyze_market_leaders(target_symbol):
             curr_price = float(df_d['Close'].iloc[-1])
             day_chg_pct = ((curr_price - prev_close) / prev_close) * 100.0
 
-            # حساب الزخم اللحظي لآخر ساعة (12 شمعة 5 دقائق)
             intraday_1h_pct = day_chg_pct
             try:
                 df_i = intra[sym].dropna() if isinstance(intra.columns, pd.MultiIndex) else intra.dropna()
@@ -525,8 +573,12 @@ def analyze_market_leaders(target_symbol):
     }
 
 
-def analyze_ticker(symbol, interval, swing_order, pricing_strategy, trading_mode, target_contract_price=3.0):
+def analyze_ticker(symbol, interval, swing_order, pricing_strategy, trading_mode, target_contract_price=2.50):
     try:
+        mkt = get_us_market_status()
+        active_session_date = mkt["active_date"]
+        is_market_open = mkt["is_open"]
+
         is_scalp_0dte = "0DTE" in trading_mode or "اللحظية" in trading_mode
         period_map = {"1m": "2d", "5m": "5d", "15m": "1mo", "1h": "3mo", "1d": "1y"}
         period = period_map.get(interval, "1y")
@@ -536,45 +588,38 @@ def analyze_ticker(symbol, interval, swing_order, pricing_strategy, trading_mode
 
         df = df.copy()
 
-        # المتوسطات المتحركة (بما فيها EMA 9 لاقتناص التقلبات اللحظية)
         df['EMA9'] = df['Close'].ewm(span=9, adjust=False).mean()
         df['EMA20'] = df['Close'].ewm(span=20, adjust=False).mean()
         df['EMA50'] = df['Close'].ewm(span=50, adjust=False).mean()
 
-        # مؤشر RSI (14) بتنعيم وايلدر القياسي (Wilder's Smoothing)
         delta_s = df['Close'].diff()
         gain = delta_s.clip(lower=0).ewm(alpha=1/14, min_periods=14, adjust=False).mean()
         loss = (-delta_s.clip(upper=0)).ewm(alpha=1/14, min_periods=14, adjust=False).mean()
         rs = gain / loss.replace(0, np.nan)
         df['RSI'] = (100 - (100 / (1 + rs))).fillna(50)
 
-        # مؤشر MACD
         df['MACD'] = df['Close'].ewm(span=12, adjust=False).mean() - df['Close'].ewm(span=26, adjust=False).mean()
         df['MACD_Signal'] = df['MACD'].ewm(span=9, adjust=False).mean()
         df['MACD_Hist'] = df['MACD'] - df['MACD_Signal']
 
-        # نطاقات بولنجر (Bollinger Bands)
         df['BB_Mid'] = df['Close'].rolling(window=20).mean()
         bb_std = df['Close'].rolling(window=20).std()
         df['BB_Upper'] = df['BB_Mid'] + (bb_std * 2)
         df['BB_Lower'] = df['BB_Mid'] - (bb_std * 2)
         df['BB_Width'] = (df['BB_Upper'] - df['BB_Lower']) / df['BB_Mid']
 
-        # متوسط المدى الحقيقي ATR (14)
         high_low = df['High'] - df['Low']
         high_close = np.abs(df['High'] - df['Close'].shift())
         low_close = np.abs(df['Low'] - df['Close'].shift())
         df['ATR'] = pd.concat([high_low, high_close, low_close], axis=1).max(axis=1).rolling(14).mean()
         df['ATR'] = df['ATR'].bfill().fillna(df['Close'] * 0.015)
 
-        # التقلب التاريخي السنوي (HV)
         log_returns = np.log(df['Close'] / df['Close'].shift(1))
         bars_per_year = {"1m": 252 * 390, "5m": 252 * 78, "15m": 252 * 26, "1h": 252 * 6.5, "1d": 252}.get(interval, 252)
         est_vol = float(log_returns.rolling(20).std().iloc[-1] * np.sqrt(bars_per_year))
         if np.isnan(est_vol) or est_vol <= 0.05:
             est_vol = 0.25
 
-        # قمم وقيعان السوينق الهيكلية
         eff_order = max(3, swing_order // 2) if is_scalp_0dte else swing_order
         high_idx = argrelextrema(df['High'].values, np.greater_equal, order=eff_order)[0]
         low_idx = argrelextrema(df['Low'].values, np.less_equal, order=eff_order)[0]
@@ -597,7 +642,6 @@ def analyze_ticker(symbol, interval, swing_order, pricing_strategy, trading_mode
         bb_w = float(df['BB_Width'].iloc[-1])
         bb_w_avg = float(df['BB_Width'].rolling(50, min_periods=10).mean().iloc[-1])
 
-        # تحديد الاتجاه: في وضع 0DTE اللحظي نعتمد على تقاطع EMA9 مع EMA20 والزخم الفوري
         if is_scalp_0dte:
             is_bullish = (current_price > ema20_val) and (ema9_val >= ema20_val or macd_val > macd_sig)
         else:
@@ -606,7 +650,6 @@ def analyze_ticker(symbol, interval, swing_order, pricing_strategy, trading_mode
         trend = "صاعد (Bullish) 🟢" if is_bullish else "هابط (Bearish) 🔴"
         option_type = "CALL 🟢 (شراء)" if is_bullish else "PUT 🔴 (بيع)"
 
-        # تقييم جودة الإشارة (Confluence Score من 5)
         score = 0
         if (is_bullish and current_price > ema9_val and current_price > ema20_val) or (not is_bullish and current_price < ema9_val and current_price < ema20_val):
             score += 1
@@ -623,7 +666,6 @@ def analyze_ticker(symbol, interval, swing_order, pricing_strategy, trading_mode
         recent_res = float(last_highs['Swing_High'].iloc[-1]) if len(last_highs) >= 1 else bb_up_val
         recent_sup = float(last_lows['Swing_Low'].iloc[-1]) if len(last_lows) >= 1 else bb_low_val
 
-        # التحقق من حجم التداول وانفجار السيولة اللحظي (Volume Spike Ratio)
         vol_ok = True
         vol_ratio = 1.0
         if 'Volume' in df.columns and df['Volume'].sum() > 0:
@@ -648,7 +690,6 @@ def analyze_ticker(symbol, interval, swing_order, pricing_strategy, trading_mode
         else:
             breakout_status = f"ترقب انفجار التقلب ({interval}) ⏳"
 
-        # حساب الأهداف ووقف الخسارة (أهداف خاطفة في 0DTE مقابل فيبوناتشي في السوينق)
         if is_scalp_0dte:
             wave_bars = 3
             est_days_t1 = 0
@@ -688,7 +729,7 @@ def analyze_ticker(symbol, interval, swing_order, pricing_strategy, trading_mode
                 target_2 = current_price - current_atr * 3.2
                 stop_loss = current_price + current_atr * 1.0
 
-        # تحديد الصلاحية الزمنية (DTE)
+        # تحديد الصلاحية الزمنية (DTE) بناءً على أسلوب المضاربة
         if is_scalp_0dte:
             est_days_t1 = 0
             est_days_t2 = 0
@@ -702,10 +743,9 @@ def analyze_ticker(symbol, interval, swing_order, pricing_strategy, trading_mode
             est_days_t2 = max(6, int(wave_bars * 1.3))
             recommended_dte = min(60, max(28, est_days_t2 + 21))
 
-        is_target_price_mode = "السعر المستهدف" in pricing_strategy or "رخيصة" in pricing_strategy
+        is_target_price_mode = "السعر المستهدف" in pricing_strategy
 
-        # هندسة السترايك الذكية المعتمدة على السعر المراد واليونانيات (Delta / Theta / IV)
-        eff_t_days = 0.25 if recommended_dte == 0 else recommended_dte
+        eff_t_days = 0.5 if recommended_dte == 0 else recommended_dte
         if is_target_price_mode:
             if not is_scalp_0dte and recommended_dte > 5:
                 recommended_dte = 1 if interval in ["1m", "5m"] else (2 if interval == "15m" else 5)
@@ -732,9 +772,13 @@ def analyze_ticker(symbol, interval, swing_order, pricing_strategy, trading_mode
             r=0.045, sigma=est_vol, is_call=is_bullish
         )
 
+        # جلب السلسلة الحية من البورصة بدءاً من active_session_date
         live_opt = fetch_live_option_hint(
             symbol, recommended_dte, is_bullish, strike_rec,
-            budget_mode=is_target_price_mode, max_budget=target_contract_price
+            active_session_date=active_session_date,
+            is_market_open=is_market_open,
+            budget_mode=is_target_price_mode,
+            max_budget=target_contract_price
         )
 
         spread_status = "غير متوفر (تسعير نظري)"
@@ -743,7 +787,7 @@ def analyze_ticker(symbol, interval, swing_order, pricing_strategy, trading_mode
         if live_opt:
             sp = live_opt.get("spread_pct", 0.0)
             if not live_opt.get("has_live_quote", True):
-                spread_status = "عروض Bid/Ask غير مكتملة - اعتماد التسعير النظري ⚠️"
+                spread_status = f"السوق مغلق ({live_opt.get('price_source', 'آخر إغلاق')}) 🟡"
             elif sp > 10.0:
                 spread_status = f"سبريد خطر ({sp:.1f}%) - تجنب أمر السوق 🔴"
             elif sp > 6.0:
@@ -771,15 +815,23 @@ def analyze_ticker(symbol, interval, swing_order, pricing_strategy, trading_mode
             if wall_parts:
                 oi_wall_note = " | ".join(wall_parts)
 
+        # مطابقة تاريخ الانتهاء الفعلي من البورصة (tk.options) لمنع أي اختلاف مع المنصة (مثل 17 يناير)
+        if live_opt and live_opt.get("expiry"):
+            expiry_str = live_opt["expiry"]
+            live_exp_date = datetime.strptime(expiry_str, "%Y-%m-%d").date()
+            recommended_dte = max(0, (live_exp_date - active_session_date).days)
+        else:
+            expiry_str, recommended_dte = get_next_valid_option_expiry(active_session_date, recommended_dte, symbol)
+
         if live_opt:
             live_iv = (live_opt.get("iv", 0.0) / 100.0)
             effective_sigma = live_iv if live_iv > 0.05 else est_vol
-            if is_target_price_mode and 0.15 <= live_opt["mid"] <= target_contract_price:
+            if is_target_price_mode and 0.10 <= live_opt["mid"] <= target_contract_price:
                 strike_rec = live_opt["strike"]
             elif not is_target_price_mode:
                 strike_rec = live_opt["strike"]
             greeks = calculate_bs_metrics(
-                S=current_price, K=strike_rec, T_days=max(recommended_dte, 0.25),
+                S=current_price, K=strike_rec, T_days=max(recommended_dte, 0.5),
                 r=0.045, sigma=effective_sigma, is_call=is_bullish
             )
 
@@ -789,32 +841,19 @@ def analyze_ticker(symbol, interval, swing_order, pricing_strategy, trading_mode
         if rr_ratio >= 1.8:
             score = min(5, score + 1)
 
-        last_dt = df.index[-1].to_pydatetime() if hasattr(df.index[-1], 'to_pydatetime') else datetime.now()
-        if getattr(last_dt, "tzinfo", None) is not None:
-            last_dt = last_dt.replace(tzinfo=None)
-        ref_base_dt = max(last_dt, datetime.now())
-        date_t1 = "خلال الجلسة (0DTE)" if est_days_t1 == 0 else add_trading_days(ref_base_dt, est_days_t1).strftime("%Y-%m-%d")
-        date_t2 = "خلال الجلسة (0DTE)" if est_days_t2 == 0 else add_trading_days(ref_base_dt, est_days_t2).strftime("%Y-%m-%d")
+        ref_base_dt = datetime.combine(active_session_date, time(9, 30))
+        date_t1 = f"جلسة {active_session_date.strftime('%Y-%m-%d')} (0DTE)" if est_days_t1 == 0 else add_trading_days(ref_base_dt, est_days_t1).strftime("%Y-%m-%d")
+        date_t2 = f"جلسة {active_session_date.strftime('%Y-%m-%d')} (0DTE)" if est_days_t2 == 0 else add_trading_days(ref_base_dt, est_days_t2).strftime("%Y-%m-%d")
 
-        today_date = datetime.now().date()
-        if live_opt and live_opt.get("expiry"):
-            live_exp_date = datetime.strptime(live_opt["expiry"], "%Y-%m-%d").date()
-            if live_exp_date >= today_date and live_exp_date.weekday() < 5:
-                expiry_str = live_opt["expiry"]
-                recommended_dte = max(0, (live_exp_date - today_date).days)
-            else:
-                expiry_str, recommended_dte = get_next_valid_option_expiry(last_dt, recommended_dte, symbol)
-        else:
-            expiry_str, recommended_dte = get_next_valid_option_expiry(last_dt, recommended_dte, symbol)
-
-        is_weekend = today_date.weekday() >= 5
-        market_note = "السوق مغلق حالياً (عطلة نهاية الأسبوع) • تم ضبط الانتهاء لأقرب جلسة قادمة" if is_weekend else "جلسة التداول نشطة / محدثة"
-
-        # الأولوية المطلقة للسعر الحي من السلسلة الحية (مطابق لمنصة سهم) متى ما توفر العقد، وإلا اللجوء للتسعير النظري
+        # تحديد السعر المعروض للعقد بدقة وموثوقية عالية:
+        # إذا كان هناك سعر حي أو سعر إغلاق حقيقي من السلسلة الحية -> نعرضه مباشرة
+        # وإذا كانت السلسلة الحية تعطي 0.0 (بسبب إغلاق السوق) -> نعتمد التسعير النظري العادل (Black-Scholes)
         if live_opt and live_opt.get("mid", 0) > 0:
             display_premium = live_opt["mid"]
+            price_source_tag = live_opt.get("price_source", "سعر السلسلة الحية")
         else:
             display_premium = greeks["premium"]
+            price_source_tag = "تسعير عادل (Black-Scholes) ⚪"
 
         greek_eff = score_option_efficiency(
             display_premium, greeks["delta"], greeks["gamma"],
@@ -823,6 +862,7 @@ def analyze_ticker(symbol, interval, swing_order, pricing_strategy, trading_mode
 
         return {
             "display_premium": float(display_premium),
+            "price_source_tag": price_source_tag,
             "greek_eff": greek_eff,
             "df": df,
             "current_price": current_price,
@@ -848,7 +888,9 @@ def analyze_ticker(symbol, interval, swing_order, pricing_strategy, trading_mode
             "macd_status": "إيجابي 🟢" if macd_val > macd_sig else "سلبي 🔴",
             "bb_status": "انفجار وشيك ⚡ (Squeeze)" if is_squeeze else "نطاق طبيعي 📊",
             "breakout_status": breakout_status,
-            "market_note": market_note,
+            "market_note": mkt["status_label"],
+            "is_market_open": is_market_open,
+            "active_session_date": active_session_date.strftime("%Y-%m-%d"),
             "spread_status": spread_status,
             "oi_wall_note": oi_wall_note,
             "pcr_note": pcr_note,
@@ -859,8 +901,15 @@ def analyze_ticker(symbol, interval, swing_order, pricing_strategy, trading_mode
 
 
 # --- واجهة المستخدم ---
-st.title("📈 محلل العقود والسوينق الاحترافي (v2.5.5)")
-st.markdown("منصة شاملة للمضاربة اللحظية (0DTE Scalping) والسوينق، مع الانتقاء الذكي باليونانيات ورصد تأثير الأسهم القيادية على المؤشرات.")
+st.title("📈 محلل العقود والسوينق الاحترافي (v2.6.0)")
+st.markdown("منصة متكاملة للمضاربة اللحظية (0DTE Scalping) واليومية والسوينق، متزامنة لحظياً مع توقيت البورصة الأمريكية وسلاسل العقود الفعلية.")
+
+# عرض شريط حالة السوق الأمريكي في أعلى الصفحة
+mkt_banner = get_us_market_status()
+if mkt_banner["is_open"]:
+    st.success(f"🕒 **حالة البورصة الأمريكية الآن:** {mkt_banner['status_label']} | التوقيت في نيويورك: {mkt_banner['now_us'].strftime('%I:%M %p EST')}")
+else:
+    st.warning(f"🕒 **حالة البورصة الأمريكية الآن:** {mkt_banner['status_label']} | التوقيت في نيويورك: {mkt_banner['now_us'].strftime('%I:%M %p EST')}")
 
 # القائمة الجانبية
 st.sidebar.header("⚙️ إعدادات التداول")
@@ -893,23 +942,23 @@ st.sidebar.header("🎯 السعر المستهدف واليونانيات")
 pricing_strategy = st.sidebar.selectbox(
     "آلية اختيار العقد:",
     [
-        "🎯 السعر المستهدف الذكي (أفضل Delta/Theta ضمن ميزانيتك)",
         "⚖️ متوازن (ATM | Delta ~0.50)",
+        "🎯 السعر المستهدف الذكي (أفضل Delta/Theta ضمن ميزانيتك)",
         "⚡ هجومي (OTM متوسط | Delta ~0.35)",
         "🛡️ تحوطي آمن (ITM | Delta ~0.65)"
     ]
 )
 target_contract_price = st.sidebar.number_input(
     "السعر المراد للعقد ($):",
-    min_value=0.05, max_value=50.0, value=0.05, step=0.05,
-    help="حدد السعر الذي ترغب به للعقد (مثلاً $0.05 أو $1.50)."
+    min_value=0.10, max_value=50.0, value=2.50, step=0.10,
+    help="يُستخدم فقط عند اختيار 'السعر المستهدف الذكي' لتصفية العقود ضمن ميزانيتك."
 )
 
-use_manual_price = st.sidebar.checkbox("🔧 تفعيل السعر اليدوي المباشر (مطابق لمنصة سهم تماماً)", value=True)
+use_manual_price = st.sidebar.checkbox("🔧 تجاوز السعر يدوياً (مطابقة سعر منصتك)", value=False)
 manual_contract_price = st.sidebar.number_input(
     "سعر العقد اليدوي ($):",
-    min_value=0.01, max_value=50.0, value=0.05, step=0.05,
-    help="أدخل السعر الظاهر لديك في منصة سهم (مثل 0.05) لتوحيد الحسابات تماماً."
+    min_value=0.01, max_value=50.0, value=1.00, step=0.05,
+    help="فعّل الخيار أعلاه فقط إذا أردت إدخال سعر التنفيذ الفوري من منصتك يدوياً."
 )
 portfolio_size = st.sidebar.number_input("حجم المحفظة ($):", min_value=1000, value=10000, step=1000)
 risk_pct = st.sidebar.number_input("المخاطرة القصوى للصفقة (%):", min_value=0.5, max_value=5.0, value=1.5, step=0.5)
@@ -941,8 +990,6 @@ with tab1:
             f"**الزخم (MACD):** {res['macd_status']} &nbsp;|&nbsp; "
             f"**البولنجر:** {res['bb_status']}"
         )
-        if "مغلق" in res.get("market_note", ""):
-            st.warning(f"🕒 **تنبيه توقيت السوق:** {res['market_note']} ({res['expiry_str']}).")
 
         c1, c2, c3, c4 = st.columns(4)
         c1.metric("السعر الحالي", f"${res['current_price']:.2f}", f"ATR: ${res['current_atr']:.2f}")
@@ -950,7 +997,6 @@ with tab1:
         c3.metric("الهدف الثاني", f"${res['target_2']:.2f}", f"التوقيت: {res['date_t2']}")
         c4.metric("وقف الخسارة (للسهم)", f"${res['stop_loss']:.2f}", f"R:R = 1 : {res['rr_ratio']:.2f}")
 
-        # إذا تم تفعيل السعر اليدوي، نعتمد سعر منصة سهم المباشر الذي أدخله المستخدم
         est_premium = manual_contract_price if use_manual_price else res["display_premium"]
         contract_cost = est_premium * 100.0
         max_risk_dollars = portfolio_size * (risk_pct / 100.0)
@@ -962,19 +1008,19 @@ with tab1:
         g4, g5, g6 = st.columns(3)
 
         if use_manual_price:
-            premium_badge = "⚠️ مدخل يدوياً (انتبه: العقود القريبة ATM ذات الـ 5 أيام لها قيمة زمنية حقيقية وليست 0.05$)"
+            premium_badge = "سعر يدوي مفعّل 🔧"
         else:
-            premium_badge = f"السعر الحي من السوق 🟢" if est_premium <= target_contract_price else "عقد قريب/ATM ذو قيمة زمنية حقيقية 📊" 
+            premium_badge = res["price_source_tag"]
 
         if res['recommended_dte'] == 0:
-            dte_label = f"ينتهي اليوم (0DTE) • {res['expiry_str']}"
+            dte_label = f"عقد الجلسة النشطة (0DTE) • {res['expiry_str']}"
         else:
             day_word = "يوم" if res['recommended_dte'] in [1, 2] or res['recommended_dte'] > 10 else "أيام"
             dte_label = f"ينتهي بعد {res['recommended_dte']} {day_word} • {res['expiry_str']}"
 
         opt_dir_ar = "شراء CALL 🟢" if res['is_bullish'] else "بيع PUT 🔴"
         g1.metric(f"العقد المقترح ({opt_dir_ar})", f"{res['option_type'].split()[0]} ${res['strike_rec']}", dte_label)
-        g2.metric("سعر العقد التقديري", f"${est_premium:.2f}", f"التكلفة ${contract_cost:.0f} • {premium_badge}")
+        g2.metric("سعر العقد الفعلي", f"${est_premium:.2f}", f"التكلفة ${contract_cost:.0f} • {premium_badge}")
         g3.metric("حجم الصفقة المقترح", f"{suggested_contracts} عقد", f"احتمالية الربح PoP: {g['pop_pct']:.0f}%")
         g4.metric("الدلتا (Delta Δ)", f"{g['delta']:.2f}", f"الجاما (Gamma): {g['gamma']:.4f}")
         g5.metric("الثيتا (Theta Θ)", f"-${abs(g['theta_daily'])*100:.2f} / يوم", f"التقلب الضمني IV: {g['iv_pct']:.1f}%")
@@ -983,10 +1029,9 @@ with tab1:
         st.info(
             f"🏛️ **النبض المؤسسي (OI & PCR):** {res['pcr_note']} &nbsp;|&nbsp; "
             f"**جدران السترايكات:** {res['oi_wall_note']} &nbsp;|&nbsp; "
-            f"**فلتر السبريد اللحظي:** {res['spread_status']}"
+            f"**حالة التسعير والسيولة:** {res['spread_status']}"
         )
 
-        # عرض نبض الأسهم القيادية مباشرة أسفل البطاقة عند تحليل المؤشرات
         leaders_quick = analyze_market_leaders(ticker if ticker in ["SPX", "SPY", "QQQ"] else "SPX")
         if leaders_quick:
             st.success(f"👑 **نبض الأسهم القيادية المتحكمة بالسوق ({ticker if ticker in ['SPX', 'SPY', 'QQQ'] else 'SPX'}):** {leaders_quick['verdict']}")
@@ -1025,10 +1070,11 @@ with tab1:
             )
 
         if live_opt:
-            spread_warn = "⚠️ عروض غير مكتملة" if not live_opt.get("has_live_quote", True) else ("⚠️ سبريد واسع - استخدم Limit Order" if live_opt["spread_pct"] > 8 else "✅ سيولة جيدة")
+            spread_warn = "السوق مغلق (تُعرض بيانات آخر إغلاق)" if not res["is_market_open"] else ("⚠️ سبريد واسع - استخدم Limit Order" if live_opt["spread_pct"] > 8 else "✅ سيولة جيدة")
             st.caption(
-                f"📡 **بيانات السلسلة الحية (أقرب عقد متاح {live_opt['expiry']} | Strike ${live_opt['strike']}):** "
-                f"Bid: ${live_opt['bid']:.2f} | Ask: ${live_opt['ask']:.2f} | السبريد: {live_opt['spread_pct']:.1f}% ({spread_warn}) | "
+                f"📡 **تفاصيل العقد في سلسلة البورصة ({live_opt['expiry']} | Strike ${live_opt['strike']}):** "
+                f"Bid: ${live_opt['bid']:.2f} | Ask: ${live_opt['ask']:.2f} | Last: ${live_opt['last']:.2f} | "
+                f"السبريد: {live_opt['spread_pct']:.1f}% ({spread_warn}) | "
                 f"الحجم: {live_opt['volume']} | العقود المفتوحة (OI): {live_opt['oi']}"
             )
 
@@ -1124,15 +1170,14 @@ with tab3:
                     "الاتجاه": d['trend'],
                     "نوع العقد": d['option_type'],
                     "Strike": f"${d['strike_rec']}",
+                    "تاريخ الانتهاء": d['expiry_str'],
                     "قسط تقديري": f"${d['display_premium']:.2f}",
                     "Delta Δ": f"{g['delta']:.2f}",
-                    "كفاءة اليونانيات": f"{d['greek_eff']:.2f}",
                     "احتمالية PoP": f"{g['pop_pct']:.0f}%",
                     "Theta/يوم": f"-${abs(g['theta_daily'])*100:.1f}",
-                    "البولنجر": d['bb_status'],
                     "الهدف 1": f"${d['target_1']:.2f}",
                     "وقف السهم": f"${d['stop_loss']:.2f}",
-                    "DTE": "0DTE (اليوم)" if d['recommended_dte'] == 0 else f"{d['recommended_dte']} يوم",
+                    "DTE": "0DTE (الجلسة)" if d['recommended_dte'] == 0 else f"{d['recommended_dte']} يوم",
                     "R:R": f"1 : {d['rr_ratio']:.2f}"
                 })
             prog.progress((idx + 1) / len(watchlist))
