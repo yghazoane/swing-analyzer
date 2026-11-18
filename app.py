@@ -1,7 +1,7 @@
 """
 ================================================================================
 اسم الأداة: محلل العقود والسوينق الاحترافي (Pro Options & Swing Analyzer)
-الإصدار: v2.5.2
+الإصدار: v2.5.3
 الوصف: منصة متكاملة للمضاربة اليومية واللحظية (0DTE Scalping) والسوينق:
        - اقتناص التقلبات اللحظية على إطارات 1m/5m (EMA9 + Bollinger Squeeze + Volume Spike).
        - تحديد السعر المستهدف للعقد والانتقاء الذكي باليونانيات (Delta, Theta, IV).
@@ -23,7 +23,7 @@ import os
 
 # إعدادات الصفحة
 st.set_page_config(
-    page_title="محلل العقود والسوينق الاحترافي v2.5.2",
+    page_title="محلل العقود والسوينق الاحترافي v2.5.3",
     layout="wide",
     initial_sidebar_state="expanded"
 )
@@ -851,7 +851,7 @@ def analyze_ticker(symbol, interval, swing_order, pricing_strategy, trading_mode
 
 
 # --- واجهة المستخدم ---
-st.title("📈 محلل العقود والسوينق الاحترافي (v2.5.2)")
+st.title("📈 محلل العقود والسوينق الاحترافي (v2.5.3)")
 st.markdown("منصة شاملة للمضاربة اللحظية (0DTE Scalping) والسوينق، مع الانتقاء الذكي باليونانيات ورصد تأثير الأسهم القيادية على المؤشرات.")
 
 # القائمة الجانبية
@@ -893,8 +893,15 @@ pricing_strategy = st.sidebar.selectbox(
 )
 target_contract_price = st.sidebar.number_input(
     "السعر المراد للعقد ($):",
-    min_value=0.20, max_value=50.0, value=2.50, step=0.10,
-    help="حدد السعر الذي ترغب به للعقد (مثلاً $1.50 أو $2.50)، وسيختار النظام أفضل سترايك يحقق أعلى دلتا وأقل تآكل ثيتا ضمن هذا السعر."
+    min_value=0.05, max_value=50.0, value=0.05, step=0.05,
+    help="حدد السعر الذي ترغب به للعقد (مثلاً $0.05 أو $1.50)."
+)
+
+use_manual_price = st.sidebar.checkbox("🔧 تفعيل السعر اليدوي المباشر (مطابق لمنصة سهم تماماً)", value=True)
+manual_contract_price = st.sidebar.number_input(
+    "سعر العقد اليدوي ($):",
+    min_value=0.01, max_value=50.0, value=0.05, step=0.05,
+    help="أدخل السعر الظاهر لديك في منصة سهم (مثل 0.05) لتوحيد الحسابات تماماً."
 )
 portfolio_size = st.sidebar.number_input("حجم المحفظة ($):", min_value=1000, value=10000, step=1000)
 risk_pct = st.sidebar.number_input("المخاطرة القصوى للصفقة (%):", min_value=0.5, max_value=5.0, value=1.5, step=0.5)
@@ -935,7 +942,8 @@ with tab1:
         c3.metric("الهدف الثاني", f"${res['target_2']:.2f}", f"التوقيت: {res['date_t2']}")
         c4.metric("وقف الخسارة (للسهم)", f"${res['stop_loss']:.2f}", f"R:R = 1 : {res['rr_ratio']:.2f}")
 
-        est_premium = res["display_premium"]
+        # إذا تم تفعيل السعر اليدوي، نعتمد سعر منصة سهم المباشر الذي أدخله المستخدم
+        est_premium = manual_contract_price if use_manual_price else res["display_premium"]
         contract_cost = est_premium * 100.0
         max_risk_dollars = portfolio_size * (risk_pct / 100.0)
         risk_per_contract = contract_cost * (contract_sl_pct / 100.0)
