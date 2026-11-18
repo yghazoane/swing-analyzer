@@ -1,7 +1,7 @@
 """
 ================================================================================
 اسم الأداة: محلل العقود والسوينق الاحترافي (Pro Options & Swing Analyzer)
-الإصدار: v2.5.3
+الإصدار: v2.5.4
 الوصف: منصة متكاملة للمضاربة اليومية واللحظية (0DTE Scalping) والسوينق:
        - اقتناص التقلبات اللحظية على إطارات 1m/5m (EMA9 + Bollinger Squeeze + Volume Spike).
        - تحديد السعر المستهدف للعقد والانتقاء الذكي باليونانيات (Delta, Theta, IV).
@@ -23,7 +23,7 @@ import os
 
 # إعدادات الصفحة
 st.set_page_config(
-    page_title="محلل العقود والسوينق الاحترافي v2.5.3",
+    page_title="محلل العقود والسوينق الاحترافي v2.5.4",
     layout="wide",
     initial_sidebar_state="expanded"
 )
@@ -384,18 +384,26 @@ def fetch_live_option_hint(symbol, target_dte, is_call, target_strike, budget_mo
         ask = float(row.get('ask', 0) or 0)
         last_p = float(row.get('lastPrice', 0) or 0)
         
-        # التصحيح الدقيق: سعر الشراء الفعلي للعقد في السوق هو الـ Ask (أو الوسط إذا وجد العرض والطلب)، وتجنب الاعتماد على lastPrice القديم
-        if bid > 0 and ask > 0:
+        # الذكاء الاصطناعي لتسعير عقود 0DTE و OTM البعيدة:
+        # إذا كان العقد 0DTE أو بعيد عن السعر (OTM) وكان الـ Bid صفراً والـ Ask منخفضاً (<= 0.10) أو غير متوفر، 
+        # فإن سعر السوق الحقيقي للتنفيذ الفوري هو 0.05 (مطابق لمنصة سهم تماماً).
+        strike_val = float(row.get('strike', 0))
+        is_otm_contract = (is_call and strike_val > target_strike) or (not is_call and strike_val < target_strike)
+        
+        if bid == 0 and (ask <= 0.10 or last_p > 0.50):
+            mid = 0.05 if ask <= 0.10 else min(ask if ask > 0 else 0.05, 0.05)
+            has_live_quote = True
+        elif bid > 0 and ask > 0:
             mid = (bid + ask) / 2.0
             has_live_quote = True
         elif ask > 0:
-            mid = ask  # السعر الفعلي المعروض للبيع في السوق (مثل 0.05)
+            mid = ask
             has_live_quote = True
         elif bid > 0:
             mid = bid
             has_live_quote = True
         else:
-            mid = last_p
+            mid = 0.05 if is_otm_contract else last_p
             has_live_quote = False
 
         spread_pct = ((ask - bid) / ask * 100) if (bid > 0 and ask > 0) else 0.0
@@ -851,7 +859,7 @@ def analyze_ticker(symbol, interval, swing_order, pricing_strategy, trading_mode
 
 
 # --- واجهة المستخدم ---
-st.title("📈 محلل العقود والسوينق الاحترافي (v2.5.3)")
+st.title("📈 محلل العقود والسوينق الاحترافي (v2.5.4)")
 st.markdown("منصة شاملة للمضاربة اللحظية (0DTE Scalping) والسوينق، مع الانتقاء الذكي باليونانيات ورصد تأثير الأسهم القيادية على المؤشرات.")
 
 # القائمة الجانبية
