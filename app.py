@@ -1,7 +1,7 @@
 """
 ================================================================================
 اسم الأداة: محلل العقود والسوينق الاحترافي (Pro Options & Swing Analyzer)
-الإصدار: v2.5.0
+الإصدار: v2.5.1
 الوصف: منصة متكاملة للمضاربة اليومية واللحظية (0DTE Scalping) والسوينق:
        - اقتناص التقلبات اللحظية على إطارات 1m/5m (EMA9 + Bollinger Squeeze + Volume Spike).
        - تحديد السعر المستهدف للعقد والانتقاء الذكي باليونانيات (Delta, Theta, IV).
@@ -23,7 +23,7 @@ import os
 
 # إعدادات الصفحة
 st.set_page_config(
-    page_title="محلل العقود والسوينق الاحترافي v2.5.0",
+    page_title="محلل العقود والسوينق الاحترافي v2.5.1",
     layout="wide",
     initial_sidebar_state="expanded"
 )
@@ -789,16 +789,11 @@ def analyze_ticker(symbol, interval, swing_order, pricing_strategy, trading_mode
         is_weekend = today_date.weekday() >= 5
         market_note = "السوق مغلق حالياً (عطلة نهاية الأسبوع) • تم ضبط الانتهاء لأقرب جلسة قادمة" if is_weekend else "جلسة التداول نشطة / محدثة"
 
-        if is_target_price_mode:
-            if live_opt and live_opt.get("has_live_quote") and 0.10 < live_opt["mid"] <= target_contract_price:
-                display_premium = live_opt["mid"]
-            else:
-                display_premium = greeks["premium"]
+        # الأولوية المطلقة للسعر الحي من السلسلة الحية (مطابق لمنصة سهم) متى ما توفر العقد، وإلا اللجوء للتسعير النظري
+        if live_opt and live_opt.get("mid", 0) > 0:
+            display_premium = live_opt["mid"]
         else:
-            if live_opt and live_opt.get("has_live_quote") and live_opt["mid"] > 0.10:
-                display_premium = live_opt["mid"]
-            else:
-                display_premium = greeks["premium"]
+            display_premium = greeks["premium"]
 
         greek_eff = score_option_efficiency(
             display_premium, greeks["delta"], greeks["gamma"],
@@ -843,7 +838,7 @@ def analyze_ticker(symbol, interval, swing_order, pricing_strategy, trading_mode
 
 
 # --- واجهة المستخدم ---
-st.title("📈 محلل العقود والسوينق الاحترافي (v2.5.0)")
+st.title("📈 محلل العقود والسوينق الاحترافي (v2.5.1)")
 st.markdown("منصة شاملة للمضاربة اللحظية (0DTE Scalping) والسوينق، مع الانتقاء الذكي باليونانيات ورصد تأثير الأسهم القيادية على المؤشرات.")
 
 # القائمة الجانبية
