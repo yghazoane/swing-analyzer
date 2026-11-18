@@ -1,7 +1,7 @@
 """
 ================================================================================
 اسم الأداة: محلل العقود والسوينق الاحترافي (Pro Options & Swing Analyzer)
-الإصدار: v2.5.4
+الإصدار: v2.5.5
 الوصف: منصة متكاملة للمضاربة اليومية واللحظية (0DTE Scalping) والسوينق:
        - اقتناص التقلبات اللحظية على إطارات 1m/5m (EMA9 + Bollinger Squeeze + Volume Spike).
        - تحديد السعر المستهدف للعقد والانتقاء الذكي باليونانيات (Delta, Theta, IV).
@@ -23,7 +23,7 @@ import os
 
 # إعدادات الصفحة
 st.set_page_config(
-    page_title="محلل العقود والسوينق الاحترافي v2.5.4",
+    page_title="محلل العقود والسوينق الاحترافي v2.5.5",
     layout="wide",
     initial_sidebar_state="expanded"
 )
@@ -859,7 +859,7 @@ def analyze_ticker(symbol, interval, swing_order, pricing_strategy, trading_mode
 
 
 # --- واجهة المستخدم ---
-st.title("📈 محلل العقود والسوينق الاحترافي (v2.5.4)")
+st.title("📈 محلل العقود والسوينق الاحترافي (v2.5.5)")
 st.markdown("منصة شاملة للمضاربة اللحظية (0DTE Scalping) والسوينق، مع الانتقاء الذكي باليونانيات ورصد تأثير الأسهم القيادية على المؤشرات.")
 
 # القائمة الجانبية
@@ -961,7 +961,10 @@ with tab1:
         g1, g2, g3 = st.columns(3)
         g4, g5, g6 = st.columns(3)
 
-        premium_badge = f"مطابق للسعر المراد (≤ ${target_contract_price:.2f}) 🟢" if est_premium <= target_contract_price else "أعلى من السعر المراد ⚠️"
+        if use_manual_price:
+            premium_badge = "⚠️ مدخل يدوياً (انتبه: العقود القريبة ATM ذات الـ 5 أيام لها قيمة زمنية حقيقية وليست 0.05$)"
+        else:
+            premium_badge = f"السعر الحي من السوق 🟢" if est_premium <= target_contract_price else "عقد قريب/ATM ذو قيمة زمنية حقيقية 📊" 
 
         if res['recommended_dte'] == 0:
             dte_label = f"ينتهي اليوم (0DTE) • {res['expiry_str']}"
