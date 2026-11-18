@@ -1,14 +1,13 @@
 """
 ================================================================================
 اسم الأداة: محلل العقود والسوينق الاحترافي (Pro Options & Swing Analyzer)
-الإصدار: v2.6.0
+الإصدار: v2.7.0
 الوصف: منصة متكاملة للمضاربة اللحظية (0DTE Scalping) واليومية والسوينق:
-       - التزامن الدقيق مع توقيت السوق الأمريكي (EST/EDT) واكتشاف إغلاق السوق تلقائياً
-         لترحيل عقود 0DTE إلى الجلسة النشطة القادمة بدلاً من عرض عقود منتهية.
-       - مطابقة تواريخ الانتهاء الفعلية 100% من سلسلة عقود البورصة الحية (مثل 17 يناير
-         بدلاً من التواريخ التقديرية غير الموجودة في المنصات).
-       - محرك تسعير هجين دقيق يعالج تصفير عروض Bid/Ask بعد إغلاق السوق الأمريكي
-         ويمنع تضارب الأسعار عند التنقل بين استراتيجيات المضاربة.
+       - إضافة مؤشر السيولة المؤسسية VWAP كمرجع أساسي لتأكيد الاتجاه ورسمه على الشارت.
+       - قائمة اختيار تاريخ الانتهاء الفعلي من البورصة (تلقائي أو اختيار تاريخ محدد لاقتناص الفرص).
+       - زر التحديث الآلي لأسعار الصفقات المفتوحة (Batch Auto-Tracker) في سجل الأداء
+         لتسجيل أعلى سعر وصله العقد (Max_Premium) حتى انتهاء صلاحيته دون استهلاك السيرفر.
+       - التزامن الكامل مع توقيت البورصة الأمريكية (EST/EDT) ومحرك التسعير الهجين الدقيق.
 ================================================================================
 """
 
@@ -26,7 +25,7 @@ import os
 
 # إعدادات الصفحة
 st.set_page_config(
-    page_title="محلل العقود والسوينق الاحترافي v2.6.0",
+    page_title="محلل العقود والسوينق الاحترافي v2.7.0",
     layout="wide",
     initial_sidebar_state="expanded"
 )
@@ -126,11 +125,7 @@ LEADER_WEIGHTS = {
 
 
 def get_us_market_status():
-    """
-    فحص حالة السوق الأمريكي بدقة وفق توقيت نيويورك (America/New_York):
-    - الجلسة الرسمية: الإثنين إلى الجمعة من 09:30 صباحاً حتى 16:00 مساءً بتوقيت نيويورك.
-    - تحديد تاريخ الجلسة النشطة القادمة (active_session_date) لتجنب اختيار عقود منتهية بعد الإغلاق.
-    """
+    """فحص حالة السوق الأمريكي بدقة وفق توقيت نيويورك (America/New_York)"""
     now_us = datetime.now(US_TZ)
     wd = now_us.weekday()  # 0=Mon ... 4=Fri, 5=Sat, 6=Sun
     t_now = now_us.time()
@@ -143,19 +138,17 @@ def get_us_market_status():
         active_date = now_us.date()
     else:
         is_open = False
-        if wd == 5:  # السبت
+        if wd == 5:
             active_date = now_us.date() + timedelta(days=2)
             status_label = "السوق مغلق (عطلة نهاية الأسبوع) • أقرب جلسة: الإثنين 🔴"
-        elif wd == 6:  # الأحد
+        elif wd == 6:
             active_date = now_us.date() + timedelta(days=1)
             status_label = "السوق مغلق (عطلة نهاية الأسبوع) • أقرب جلسة: الإثنين 🔴"
         elif t_now >= market_close:
-            # بعد إغلاق الساعة 4:00 عصراً بتوقيت نيويورك -> الجلسة القادمة هي يوم العمل التالي
             days_to_add = 3 if wd == 4 else 1
             active_date = now_us.date() + timedelta(days=days_to_add)
             status_label = f"السوق الأمريكي مغلق حالياً (بعد الإغلاق) • تم ترحيل العقود لجلسة {active_date.strftime('%Y-%m-%d')} 🔴"
         else:
-            # قبل الافتتاح (Pre-Market) -> الجلسة هي نفس اليوم
             active_date = now_us.date()
             status_label = f"السوق مغلق (ما قبل الافتتاح Pre-Market) • جلسة اليوم {active_date.strftime('%Y-%m-%d')} 🟡"
 
@@ -171,8 +164,8 @@ def init_trade_log():
     if not os.path.exists(LOG_FILE):
         df = pd.DataFrame(columns=[
             "Timestamp", "Ticker", "Style", "Option_Type", "Strike", "Expiry",
-            "Entry_Premium", "Max_Premium", "Stop_Underlying", "Target1_Underlying",
-            "Contracts", "Status", "Notes"
+            "Entry_Premium", "Last_Checked_Price", "Max_Premium", "Stop_Underlying", "Target1_Underlying",
+            "Contracts", "Status", "Last_Updated", "Notes"
         ])
         df.to_csv(LOG_FILE, index=False)
 
@@ -180,39 +173,146 @@ def init_trade_log():
 def log_new_trade(ticker, style, opt_type, strike, expiry, premium, stop_u, target1_u, contracts):
     init_trade_log()
     df = pd.read_csv(LOG_FILE)
+    now_str = datetime.now().strftime("%Y-%m-%d %H:%M")
     new_entry = pd.DataFrame([{
-        "Timestamp": datetime.now().strftime("%Y-%m-%d %H:%M"),
+        "Timestamp": now_str,
         "Ticker": ticker,
         "Style": style,
         "Option_Type": opt_type,
         "Strike": strike,
         "Expiry": expiry,
         "Entry_Premium": round(premium, 2),
+        "Last_Checked_Price": round(premium, 2),
         "Max_Premium": round(premium, 2),
         "Stop_Underlying": round(stop_u, 2),
         "Target1_Underlying": round(target1_u, 2),
         "Contracts": contracts,
         "Status": "مفتوح للمراقبة ⏳",
+        "Last_Updated": now_str,
         "Notes": "إشارة نظامية"
     }])
     df = pd.concat([df, new_entry], ignore_index=True)
     df.to_csv(LOG_FILE, index=False)
 
 
-def get_next_valid_option_expiry(active_session_date, target_dte, symbol):
+def batch_update_open_trades():
     """
-    حساب أقرب تاريخ انتهاء تداول حقيقي (تجنب تواريخ غير موجودة في البورصة):
-    - للمؤشرات اليومية (SPX, SPY, QQQ, IWM): أيام التداول من الإثنين إلى الجمعة.
-    - للأسهم وعقود السوينق: أيام الجمعة (Friday Expirations) المطابقة لسلاسل البورصة.
+    التحديث الآلي الذكي للصفقات المفتوحة (Batch Auto-Tracker):
+    - يمر على جميع الصفقات المفتوحة في السجل بدون إرهاق الخادم.
+    - يسحب السعر الحالي أو سعر الإغلاق للعقد من البورصة، ويحدث أعلى سعر وصله العقد (Max_Premium).
+    - يغلق الصفقة تلقائياً كـ (منتهي الصلاحية) إذا تجاوز التاريخ الحالي تاريخ انتهاء العقد.
     """
-    target_date = active_session_date + timedelta(days=target_dte)
+    init_trade_log()
+    df = pd.read_csv(LOG_FILE)
+    if df.empty:
+        return 0, "لا توجد صفقات في السجل."
 
+    for col, default_val in [("Last_Checked_Price", 0.0), ("Last_Updated", "")]:
+        if col not in df.columns:
+            df[col] = default_val
+
+    mkt = get_us_market_status()
+    today_us = mkt["now_us"].date()
+    updated_count = 0
+    now_str = datetime.now().strftime("%Y-%m-%d %H:%M")
+
+    # تجميع الطلبات حسب الرمز وتاريخ الانتهاء لتقليل عدد الطلبات إلى البورصة
+    open_mask = df["Status"].astype(str).str.contains("مفتوح", na=False)
+    open_indices = df[open_mask].index.tolist()
+    if not open_indices:
+        return 0, "لا توجد صفقات مفتوحة للمراقبة حالياً."
+
+    chain_cache = {}
+    for idx in open_indices:
+        row = df.loc[idx]
+        sym = str(row["Ticker"]).strip()
+        exp_str = str(row["Expiry"]).strip()
+        opt_type = str(row["Option_Type"]).strip().upper()
+        strike_val = float(row["Strike"])
+
+        try:
+            exp_date = datetime.strptime(exp_str, "%Y-%m-%d").date()
+        except Exception:
+            exp_date = today_us
+
+        # إذا انتهى تاريخ العقد
+        if exp_date < today_us:
+            df.at[idx, "Status"] = "منتهي الصلاحية 🏁"
+            df.at[idx, "Last_Updated"] = now_str
+            updated_count += 1
+            continue
+
+        cache_key = (sym, exp_str)
+        if cache_key not in chain_cache:
+            try:
+                candidates = ["^SPX", "^GSPC"] if sym == "SPX" else [sym]
+                fetched_chain = None
+                for cand in candidates:
+                    tk = yf.Ticker(cand)
+                    if exp_str in tk.options:
+                        fetched_chain = tk.option_chain(exp_str)
+                        break
+                chain_cache[cache_key] = fetched_chain
+            except Exception:
+                chain_cache[cache_key] = None
+
+        chain = chain_cache[cache_key]
+        if chain is None:
+            continue
+
+        opt_df = chain.calls if "CALL" in opt_type else chain.puts
+        if opt_df is None or opt_df.empty:
+            continue
+
+        match = opt_df[(opt_df["strike"] - strike_val).abs() < 0.01]
+        if match.empty:
+            continue
+
+        r_opt = match.iloc[0]
+        bid = float(r_opt.get("bid", 0) or 0)
+        ask = float(r_opt.get("ask", 0) or 0)
+        last_p = float(r_opt.get("lastPrice", 0) or 0)
+
+        curr_opt_price = ((bid + ask) / 2.0) if (bid > 0 and ask > 0) else (ask if ask > 0 else last_p)
+        if curr_opt_price > 0:
+            prev_max = float(row.get("Max_Premium", 0) or 0)
+            entry_p = float(row.get("Entry_Premium", 0) or 0)
+            new_max = max(prev_max, entry_p, curr_opt_price)
+
+            df.at[idx, "Last_Checked_Price"] = round(curr_opt_price, 2)
+            df.at[idx, "Max_Premium"] = round(new_max, 2)
+            df.at[idx, "Last_Updated"] = now_str
+            if exp_date == today_us and not mkt["is_open"] and mkt["now_us"].time() >= time(16, 0):
+                df.at[idx, "Status"] = "منتهي الصلاحية 🏁"
+            updated_count += 1
+
+    df.to_csv(LOG_FILE, index=False)
+    return updated_count, f"تم تحديث {updated_count} صفقة بنجاح من بيانات البورصة!"
+
+
+@st.cache_data(ttl=120)
+def get_available_expirations(symbol, active_session_date):
+    """جلب قائمة تواريخ الانتهاء المتاحة فعلياً في البورصة للاختيار المباشر"""
+    try:
+        candidates = ["^SPX", "^GSPC"] if symbol == "SPX" else [symbol]
+        for cand in candidates:
+            tk = yf.Ticker(cand)
+            exps = tk.options
+            if exps:
+                valid = [e for e in exps if datetime.strptime(e, "%Y-%m-%d").date() >= active_session_date]
+                return valid if valid else list(exps)
+    except Exception:
+        pass
+    return []
+
+
+def get_next_valid_option_expiry(active_session_date, target_dte, symbol):
+    target_date = active_session_date + timedelta(days=target_dte)
     daily_exp_symbols = {"SPX", "SPY", "QQQ", "IWM"}
     if symbol in daily_exp_symbols and target_dte <= 7:
         while target_date.weekday() >= 5:
             target_date += timedelta(days=1)
     else:
-        # عقود السوينق والأسهم تنتهي دائماً يوم الجمعة في البورصة الأمريكية
         while target_date.weekday() != 4:
             target_date += timedelta(days=1)
 
@@ -351,14 +451,8 @@ def fetch_price_history(symbol, period, interval):
 
 
 @st.cache_data(ttl=45)
-def fetch_live_option_hint(symbol, target_dte, is_call, target_strike, active_session_date, is_market_open, budget_mode=False, max_budget=3.0):
-    """
-    جلب السلسلة الحية للأوبشن من البورصة مباشرة:
-    1. مطابقة تاريخ الانتهاء الفعلي الموجود في البورصة (tk.options) فقط، بدءاً من active_session_date
-       بحيث لا يعرض عقوداً منتهية إذا كان السوق مغلقاً، ولا يعرض تواريخ غير موجودة في المنصة.
-    2. معالجة ذكية للأسعار عند إغلاق السوق (حيث تصبح عروض Bid/Ask صفراً في Yahoo Finance)
-       عبر استخدام آخر سعر تداول فعلي (lastPrice) أو السعر العادل المحسوب بدقة.
-    """
+def fetch_live_option_hint(symbol, target_dte, is_call, target_strike, active_session_date, is_market_open, budget_mode=False, max_budget=3.0, forced_expiry=None):
+    """جلب السلسلة الحية للأوبشن من البورصة مع دعم اختيار تاريخ انتهاء محدد"""
     try:
         candidates = ["^SPX", "^GSPC"] if symbol == "SPX" else [symbol]
         tk = None
@@ -373,17 +467,20 @@ def fetch_live_option_hint(symbol, target_dte, is_call, target_strike, active_se
         if not expirations or tk is None:
             return None
 
-        # تصفية التواريخ لتبدأ من تاريخ الجلسة النشطة (active_session_date) وليس تاريخاً منتهياً
-        valid_exps = [e for e in expirations if datetime.strptime(e, "%Y-%m-%d").date() >= active_session_date]
-        if not valid_exps:
-            valid_exps = [e for e in expirations if datetime.strptime(e, "%Y-%m-%d").date() >= datetime.now(US_TZ).date()]
-        if not valid_exps:
-            valid_exps = list(expirations)
+        if forced_expiry and forced_expiry in expirations:
+            best_exp = forced_expiry
+        else:
+            valid_exps = [e for e in expirations if datetime.strptime(e, "%Y-%m-%d").date() >= active_session_date]
+            if not valid_exps:
+                valid_exps = [e for e in expirations if datetime.strptime(e, "%Y-%m-%d").date() >= datetime.now(US_TZ).date()]
+            if not valid_exps:
+                valid_exps = list(expirations)
 
-        best_exp = min(
-            valid_exps,
-            key=lambda x: abs((datetime.strptime(x, "%Y-%m-%d").date() - active_session_date).days - target_dte)
-        )
+            best_exp = min(
+                valid_exps,
+                key=lambda x: abs((datetime.strptime(x, "%Y-%m-%d").date() - active_session_date).days - target_dte)
+            )
+
         chain = tk.option_chain(best_exp)
         calls_df = chain.calls if chain.calls is not None else pd.DataFrame()
         puts_df = chain.puts if chain.puts is not None else pd.DataFrame()
@@ -408,9 +505,6 @@ def fetch_live_option_hint(symbol, target_dte, is_call, target_strike, active_se
         df_opt['ask_f'] = df_opt['ask'].fillna(0).astype(float)
         df_opt['last_f'] = df_opt['lastPrice'].fillna(0).astype(float)
 
-        # حساب السعر الفعلي لكل عقد في السلسلة:
-        # إذا كان السوق مفتوحاً وتتوفر عروض Bid/Ask حية -> نأخذ المنتصف (Mid)
-        # إذا كان السوق مغلقاً (Bid=0 و Ask=0) -> نعتمد lastPrice الحقيقي من آخر إغلاق جلسة
         df_opt['true_price'] = np.where(
             (df_opt['bid_f'] > 0) & (df_opt['ask_f'] > 0),
             (df_opt['bid_f'] + df_opt['ask_f']) / 2.0,
@@ -573,7 +667,31 @@ def analyze_market_leaders(target_symbol):
     }
 
 
-def analyze_ticker(symbol, interval, swing_order, pricing_strategy, trading_mode, target_contract_price=2.50):
+def compute_vwap(df):
+    """
+    حساب مؤشر السيولة المؤسسية VWAP (Volume Weighted Average Price):
+    - للبيانات اللحظية (Intraday): يُعاد ضبطه مع بداية كل جلسة تداول يومية.
+    - للبيانات اليومية (1d) أو عند غياب الفوليوم (مثل مؤشر ^GSPC): يستخدم المتوسط المرجح المتراكم أو السعر النموذجي.
+    """
+    typical_price = (df['High'] + df['Low'] + df['Close']) / 3.0
+    if 'Volume' in df.columns and df['Volume'].sum() > 0:
+        vol = df['Volume'].replace(0, np.nan).fillna(1.0)
+        # تجميع حسب اليوم للبيانات اللحظية
+        try:
+            dates = pd.to_datetime(df.index).date
+            if len(np.unique(dates)) > 1 and len(df) > len(np.unique(dates)) * 2:
+                pv = typical_price * vol
+                vwap = pv.groupby(dates).cumsum() / vol.groupby(dates).cumsum()
+                return vwap
+        except Exception:
+            pass
+        vwap = (typical_price * vol).rolling(20, min_periods=1).sum() / vol.rolling(20, min_periods=1).sum()
+        return vwap
+    else:
+        return typical_price.rolling(20, min_periods=1).mean()
+
+
+def analyze_ticker(symbol, interval, swing_order, pricing_strategy, trading_mode, target_contract_price=2.50, forced_expiry=None):
     try:
         mkt = get_us_market_status()
         active_session_date = mkt["active_date"]
@@ -591,6 +709,7 @@ def analyze_ticker(symbol, interval, swing_order, pricing_strategy, trading_mode
         df['EMA9'] = df['Close'].ewm(span=9, adjust=False).mean()
         df['EMA20'] = df['Close'].ewm(span=20, adjust=False).mean()
         df['EMA50'] = df['Close'].ewm(span=50, adjust=False).mean()
+        df['VWAP'] = compute_vwap(df)
 
         delta_s = df['Close'].diff()
         gain = delta_s.clip(lower=0).ewm(alpha=1/14, min_periods=14, adjust=False).mean()
@@ -636,6 +755,7 @@ def analyze_ticker(symbol, interval, swing_order, pricing_strategy, trading_mode
         ema9_val = float(df['EMA9'].iloc[-1])
         ema20_val = float(df['EMA20'].iloc[-1])
         ema50_val = float(df['EMA50'].iloc[-1])
+        vwap_val = float(df['VWAP'].iloc[-1])
         current_rsi = float(df['RSI'].iloc[-1])
         macd_val = float(df['MACD'].iloc[-1])
         macd_sig = float(df['MACD_Signal'].iloc[-1])
@@ -647,11 +767,20 @@ def analyze_ticker(symbol, interval, swing_order, pricing_strategy, trading_mode
         else:
             is_bullish = current_price > ema50_val
 
+        above_vwap = current_price >= vwap_val
+        vwap_diff_pct = ((current_price - vwap_val) / vwap_val) * 100.0 if vwap_val > 0 else 0.0
+        if above_vwap:
+            vwap_status = f"فوق VWAP (${vwap_val:.2f} | {vwap_diff_pct:+.2f}%) سيولة شرائية 🟢"
+        else:
+            vwap_status = f"تحت VWAP (${vwap_val:.2f} | {vwap_diff_pct:+.2f}%) ضغط بيعي 🔴"
+
         trend = "صاعد (Bullish) 🟢" if is_bullish else "هابط (Bearish) 🔴"
         option_type = "CALL 🟢 (شراء)" if is_bullish else "PUT 🔴 (بيع)"
 
         score = 0
         if (is_bullish and current_price > ema9_val and current_price > ema20_val) or (not is_bullish and current_price < ema9_val and current_price < ema20_val):
+            score += 1
+        if (is_bullish and above_vwap) or (not is_bullish and not above_vwap):
             score += 1
         if (is_bullish and macd_val > macd_sig) or (not is_bullish and macd_val < macd_sig):
             score += 1
@@ -677,10 +806,10 @@ def analyze_ticker(symbol, interval, swing_order, pricing_strategy, trading_mode
 
         if is_bullish:
             broke_level = (current_price > recent_res) or (current_price > bb_up_val)
-            momentum_ok = (macd_val > macd_sig) and (current_price > ema9_val)
+            momentum_ok = (macd_val > macd_sig) and (current_price > ema9_val) and above_vwap
         else:
             broke_level = (current_price < recent_sup) or (current_price < bb_low_val)
-            momentum_ok = (macd_val < macd_sig) and (current_price < ema9_val)
+            momentum_ok = (macd_val < macd_sig) and (current_price < ema9_val) and (not above_vwap)
 
         if broke_level and momentum_ok and vol_ok:
             breakout_status = f"انفجار سعري مؤكد ({interval} • سيولة {vol_ratio:.1f}x) 🟢"
@@ -729,8 +858,18 @@ def analyze_ticker(symbol, interval, swing_order, pricing_strategy, trading_mode
                 target_2 = current_price - current_atr * 3.2
                 stop_loss = current_price + current_atr * 1.0
 
-        # تحديد الصلاحية الزمنية (DTE) بناءً على أسلوب المضاربة
-        if is_scalp_0dte:
+        # تحديد الصلاحية الزمنية (DTE)
+        if forced_expiry:
+            try:
+                f_date = datetime.strptime(forced_expiry, "%Y-%m-%d").date()
+                recommended_dte = max(0, (f_date - active_session_date).days)
+                est_days_t1 = 0 if recommended_dte == 0 else min(recommended_dte, 2)
+                est_days_t2 = 0 if recommended_dte == 0 else min(recommended_dte, 4)
+            except Exception:
+                recommended_dte = 0
+                est_days_t1 = 0
+                est_days_t2 = 0
+        elif is_scalp_0dte:
             est_days_t1 = 0
             est_days_t2 = 0
             recommended_dte = 0
@@ -747,7 +886,7 @@ def analyze_ticker(symbol, interval, swing_order, pricing_strategy, trading_mode
 
         eff_t_days = 0.5 if recommended_dte == 0 else recommended_dte
         if is_target_price_mode:
-            if not is_scalp_0dte and recommended_dte > 5:
+            if not forced_expiry and not is_scalp_0dte and recommended_dte > 5:
                 recommended_dte = 1 if interval in ["1m", "5m"] else (2 if interval == "15m" else 5)
                 eff_t_days = recommended_dte
             strike_rec = find_smart_greek_strike(
@@ -772,13 +911,13 @@ def analyze_ticker(symbol, interval, swing_order, pricing_strategy, trading_mode
             r=0.045, sigma=est_vol, is_call=is_bullish
         )
 
-        # جلب السلسلة الحية من البورصة بدءاً من active_session_date
         live_opt = fetch_live_option_hint(
             symbol, recommended_dte, is_bullish, strike_rec,
             active_session_date=active_session_date,
             is_market_open=is_market_open,
             budget_mode=is_target_price_mode,
-            max_budget=target_contract_price
+            max_budget=target_contract_price,
+            forced_expiry=forced_expiry
         )
 
         spread_status = "غير متوفر (تسعير نظري)"
@@ -815,11 +954,12 @@ def analyze_ticker(symbol, interval, swing_order, pricing_strategy, trading_mode
             if wall_parts:
                 oi_wall_note = " | ".join(wall_parts)
 
-        # مطابقة تاريخ الانتهاء الفعلي من البورصة (tk.options) لمنع أي اختلاف مع المنصة (مثل 17 يناير)
         if live_opt and live_opt.get("expiry"):
             expiry_str = live_opt["expiry"]
             live_exp_date = datetime.strptime(expiry_str, "%Y-%m-%d").date()
             recommended_dte = max(0, (live_exp_date - active_session_date).days)
+        elif forced_expiry:
+            expiry_str = forced_expiry
         else:
             expiry_str, recommended_dte = get_next_valid_option_expiry(active_session_date, recommended_dte, symbol)
 
@@ -845,9 +985,6 @@ def analyze_ticker(symbol, interval, swing_order, pricing_strategy, trading_mode
         date_t1 = f"جلسة {active_session_date.strftime('%Y-%m-%d')} (0DTE)" if est_days_t1 == 0 else add_trading_days(ref_base_dt, est_days_t1).strftime("%Y-%m-%d")
         date_t2 = f"جلسة {active_session_date.strftime('%Y-%m-%d')} (0DTE)" if est_days_t2 == 0 else add_trading_days(ref_base_dt, est_days_t2).strftime("%Y-%m-%d")
 
-        # تحديد السعر المعروض للعقد بدقة وموثوقية عالية:
-        # إذا كان هناك سعر حي أو سعر إغلاق حقيقي من السلسلة الحية -> نعرضه مباشرة
-        # وإذا كانت السلسلة الحية تعطي 0.0 (بسبب إغلاق السوق) -> نعتمد التسعير النظري العادل (Black-Scholes)
         if live_opt and live_opt.get("mid", 0) > 0:
             display_premium = live_opt["mid"]
             price_source_tag = live_opt.get("price_source", "سعر السلسلة الحية")
@@ -868,6 +1005,8 @@ def analyze_ticker(symbol, interval, swing_order, pricing_strategy, trading_mode
             "current_price": current_price,
             "current_atr": current_atr,
             "current_rsi": current_rsi,
+            "vwap_val": vwap_val,
+            "vwap_status": vwap_status,
             "is_bullish": is_bullish,
             "trend": trend,
             "option_type": option_type,
@@ -901,8 +1040,8 @@ def analyze_ticker(symbol, interval, swing_order, pricing_strategy, trading_mode
 
 
 # --- واجهة المستخدم ---
-st.title("📈 محلل العقود والسوينق الاحترافي (v2.6.0)")
-st.markdown("منصة متكاملة للمضاربة اللحظية (0DTE Scalping) واليومية والسوينق، متزامنة لحظياً مع توقيت البورصة الأمريكية وسلاسل العقود الفعلية.")
+st.title("📈 محلل العقود والسوينق الاحترافي (v2.7.0)")
+st.markdown("منصة متكاملة للمضاربة اللحظية (0DTE Scalping) واليومية والسوينق، مدعومة بمؤشر السيولة المؤسسية VWAP وسجل التتبع الآلي.")
 
 # عرض شريط حالة السوق الأمريكي في أعلى الصفحة
 mkt_banner = get_us_market_status()
@@ -931,6 +1070,20 @@ else:
 
 interval = st.sidebar.selectbox("الإطار الزمني:", ["1m", "5m", "15m", "1h", "1d"], index=default_tf_idx)
 ticker = st.sidebar.selectbox("الأصل المالي:", ["SPX", "SPY", "QQQ", "IWM", "NVDA", "AAPL", "TSLA", "MSFT", "AMZN", "META", "AMD", "GOOGL", "NFLX"])
+
+# قائمة مرنة لاختيار تاريخ انتهاء محدد عند الرغبة في اقتناص فرصة (تلقائي كخيار افتراضي)
+avail_exps = get_available_expirations(ticker, mkt_banner["active_date"])
+exp_options = ["🤖 تلقائي (حسب أسلوب المضاربة)"] + [
+    f"{e} ({max(0, (datetime.strptime(e, '%Y-%m-%d').date() - mkt_banner['active_date']).days)} يوم)"
+    for e in avail_exps[:12]
+]
+selected_exp_label = st.sidebar.selectbox(
+    "📅 تاريخ انتهاء العقد (للقنص السريع):",
+    exp_options,
+    help="اتركه تلقائياً ليتوافق مع أسلوب المضاربة، أو اختر تاريخاً محدداً من البورصة (مثل بعد يومين) لاقتناص فرصة فورية."
+)
+forced_expiry_val = None if "تلقائي" in selected_exp_label else selected_exp_label.split()[0]
+
 swing_order = st.sidebar.slider("حساسية القمم والقيعان:", min_value=3, max_value=15, value=7)
 
 if st.sidebar.button("🔄 تحديث البيانات ومسح الكاش"):
@@ -972,7 +1125,10 @@ tab1, tab2, tab3, tab4 = st.tabs([
 ])
 
 with tab1:
-    res, err_detail = analyze_ticker(ticker, interval, swing_order, pricing_strategy, trading_mode, target_contract_price)
+    res, err_detail = analyze_ticker(
+        ticker, interval, swing_order, pricing_strategy, trading_mode,
+        target_contract_price, forced_expiry=forced_expiry_val
+    )
     if res is None:
         st.warning(f"⚠️ تعذر جلب بيانات كافية للرمز ({ticker}) على الإطار ({interval}).")
         if err_detail:
@@ -985,10 +1141,10 @@ with tab1:
         st.info(
             f"**الأصل:** {ticker} ({interval}) &nbsp;|&nbsp; "
             f"**الاتجاه:** {res['trend']} &nbsp;|&nbsp; "
-            f"**حالة التقلب:** {res['breakout_status']} &nbsp;|&nbsp; "
+            f"**البوصلة المؤسسية:** {res['vwap_status']} &nbsp;|&nbsp; "
             f"**التوافق:** {res['score']} من 5 ⭐ &nbsp;|&nbsp; "
             f"**الزخم (MACD):** {res['macd_status']} &nbsp;|&nbsp; "
-            f"**البولنجر:** {res['bb_status']}"
+            f"**حالة التقلب:** {res['breakout_status']}"
         )
 
         c1, c2, c3, c4 = st.columns(4)
@@ -1089,11 +1245,12 @@ with tab1:
         fig = make_subplots(
             rows=3, cols=1, shared_xaxes=True, vertical_spacing=0.03,
             row_heights=[0.60, 0.20, 0.20],
-            subplot_titles=(f"هيكل السعر ومستويات التقلب لـ {ticker}", "مؤشر القوة النسبية RSI (14)", "مؤشر الزخم MACD")
+            subplot_titles=(f"هيكل السعر ومؤشر VWAP لـ {ticker}", "مؤشر القوة النسبية RSI (14)", "مؤشر الزخم MACD")
         )
         fig.add_trace(go.Candlestick(
             x=df.index, open=df['Open'], high=df['High'], low=df['Low'], close=df['Close'], name="السعر"
         ), row=1, col=1)
+        fig.add_trace(go.Scatter(x=df.index, y=df['VWAP'], line=dict(color='#EC4899', width=2.2), name="VWAP (السيولة المؤسسية)"), row=1, col=1)
         fig.add_trace(go.Scatter(x=df.index, y=df['BB_Upper'], line=dict(color='rgba(56,189,248,0.4)', width=1, dash='dash'), name="BB Upper"), row=1, col=1)
         fig.add_trace(go.Scatter(x=df.index, y=df['BB_Lower'], line=dict(color='rgba(56,189,248,0.4)', width=1, dash='dash'), fill='tonexty', fillcolor='rgba(56,189,248,0.05)', name="BB Lower"), row=1, col=1)
         fig.add_trace(go.Scatter(x=df.index, y=df['EMA9'], line=dict(color='#10B981', width=1.2, dash='dot'), name="EMA 9 (لحظي)"), row=1, col=1)
@@ -1160,13 +1317,14 @@ with tab3:
         rows = []
         prog = st.progress(0)
         for idx, sym in enumerate(watchlist):
-            d, _ = analyze_ticker(sym, interval, swing_order, pricing_strategy, trading_mode, target_contract_price)
+            d, _ = analyze_ticker(sym, interval, swing_order, pricing_strategy, trading_mode, target_contract_price, forced_expiry=forced_expiry_val)
             if d:
                 g = d["greeks"]
                 rows.append({
                     "الرمز": sym,
                     "التقييم": f"{d['score']}/5 ⭐",
                     "السعر الحالي": f"${d['current_price']:.2f}",
+                    "حالة VWAP": "فوق VWAP 🟢" if d['current_price'] >= d['vwap_val'] else "تحت VWAP 🔴",
                     "الاتجاه": d['trend'],
                     "نوع العقد": d['option_type'],
                     "Strike": f"${d['strike_rec']}",
@@ -1174,7 +1332,6 @@ with tab3:
                     "قسط تقديري": f"${d['display_premium']:.2f}",
                     "Delta Δ": f"{g['delta']:.2f}",
                     "احتمالية PoP": f"{g['pop_pct']:.0f}%",
-                    "Theta/يوم": f"-${abs(g['theta_daily'])*100:.1f}",
                     "الهدف 1": f"${d['target_1']:.2f}",
                     "وقف السهم": f"${d['stop_loss']:.2f}",
                     "DTE": "0DTE (الجلسة)" if d['recommended_dte'] == 0 else f"{d['recommended_dte']} يوم",
@@ -1189,16 +1346,41 @@ with tab3:
             st.warning("لم يتم العثور على بيانات كافية.")
 
 with tab4:
-    st.subheader("📈 سجل تتبع الصفقات والأداء (Trade Journal)")
+    st.subheader("📈 سجل تتبع الصفقات والأداء (Trade Journal & Auto-Tracker)")
     init_trade_log()
     history_df = pd.read_csv(LOG_FILE)
+
+    col_upd, col_info = st.columns([1, 2])
+    with col_upd:
+        if st.button("🔄 تحديث آلي لأسعار الصفقات المفتوحة", type="primary"):
+            cnt, msg = batch_update_open_trades()
+            if cnt > 0:
+                st.success(msg)
+                st.rerun()
+            else:
+                st.info(msg)
+    with col_info:
+        st.caption("يقوم التحديث الآلي بسحب آخر سعر للعقد من البورصة وتسجيل أعلى قمة وصلها (Max_Premium) حتى تاريخ انتهائه بضغطة واحدة دون إرهاق الخادم.")
+
     if not history_df.empty:
         if "Entry_Premium" in history_df.columns and "Max_Premium" in history_df.columns:
-            history_df["ROI_%"] = ((history_df["Max_Premium"] - history_df["Entry_Premium"]) / history_df["Entry_Premium"] * 100).round(2)
+            history_df["Peak_ROI_%"] = ((history_df["Max_Premium"] - history_df["Entry_Premium"]) / history_df["Entry_Premium"] * 100).round(2)
+
+        # ملخص أداء الأداة من واقع الصفقات المسجلة
+        total_trades = len(history_df)
+        winning_trades = len(history_df[history_df["Max_Premium"] > history_df["Entry_Premium"]])
+        win_rate = (winning_trades / total_trades * 100) if total_trades > 0 else 0.0
+        avg_peak_roi = history_df["Peak_ROI_%"].mean() if "Peak_ROI_%" in history_df.columns else 0.0
+
+        j1, j2, j3 = st.columns(3)
+        j1.metric("إجمالي الصفقات المسجلة", f"{total_trades} صفقة")
+        j2.metric("نسبة الصفقات التي حققت قمة ربحية", f"{win_rate:.0f}%", f"{winning_trades} من {total_trades}")
+        j3.metric("متوسط أقصى عائد (Peak ROI)", f"{avg_peak_roi:+.1f}%")
+
         edited_df = st.data_editor(history_df, num_rows="dynamic", use_container_width=True, key="journal_editor")
         col_s, col_c = st.columns([1, 1])
         with col_s:
-            if st.button("💾 حفظ التعديلات"):
+            if st.button("💾 حفظ التعديلات اليدوية"):
                 edited_df.to_csv(LOG_FILE, index=False)
                 st.success("تم حفظ السجل بنجاح!")
                 st.rerun()
@@ -1208,4 +1390,4 @@ with tab4:
                 st.warning("تم مسح السجل.")
                 st.rerun()
     else:
-        st.info("لا توجد صفقات مسجلة حتى الآن. أضف أي فرصة من التبويب الأول لمتابعتها هنا.")
+        st.info("لا توجد صفقات مسجلة حتى الآن. أضف أي فرصة من التبويب الأول لمتابعتها وتقييم دقة الأداة هنا.")
