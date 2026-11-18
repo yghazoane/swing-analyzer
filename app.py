@@ -1,7 +1,7 @@
 """
 ================================================================================
 اسم الأداة: محلل العقود والسوينق الاحترافي (Pro Options & Swing Analyzer)
-الإصدار: v2.5.1
+الإصدار: v2.5.2
 الوصف: منصة متكاملة للمضاربة اليومية واللحظية (0DTE Scalping) والسوينق:
        - اقتناص التقلبات اللحظية على إطارات 1m/5m (EMA9 + Bollinger Squeeze + Volume Spike).
        - تحديد السعر المستهدف للعقد والانتقاء الذكي باليونانيات (Delta, Theta, IV).
@@ -23,7 +23,7 @@ import os
 
 # إعدادات الصفحة
 st.set_page_config(
-    page_title="محلل العقود والسوينق الاحترافي v2.5.1",
+    page_title="محلل العقود والسوينق الاحترافي v2.5.2",
     layout="wide",
     initial_sidebar_state="expanded"
 )
@@ -383,9 +383,22 @@ def fetch_live_option_hint(symbol, target_dte, is_call, target_strike, budget_mo
         bid = float(row.get('bid', 0) or 0)
         ask = float(row.get('ask', 0) or 0)
         last_p = float(row.get('lastPrice', 0) or 0)
-        has_live_quote = (bid > 0 and ask > 0)
-        mid = (bid + ask) / 2.0 if has_live_quote else (ask * 0.90 if ask > 0 else last_p)
-        spread_pct = ((ask - bid) / ask * 100) if has_live_quote else 99.0
+        
+        # التصحيح الدقيق: سعر الشراء الفعلي للعقد في السوق هو الـ Ask (أو الوسط إذا وجد العرض والطلب)، وتجنب الاعتماد على lastPrice القديم
+        if bid > 0 and ask > 0:
+            mid = (bid + ask) / 2.0
+            has_live_quote = True
+        elif ask > 0:
+            mid = ask  # السعر الفعلي المعروض للبيع في السوق (مثل 0.05)
+            has_live_quote = True
+        elif bid > 0:
+            mid = bid
+            has_live_quote = True
+        else:
+            mid = last_p
+            has_live_quote = False
+
+        spread_pct = ((ask - bid) / ask * 100) if (bid > 0 and ask > 0) else 0.0
         return {
             "expiry": best_exp,
             "strike": float(row['strike']),
@@ -838,7 +851,7 @@ def analyze_ticker(symbol, interval, swing_order, pricing_strategy, trading_mode
 
 
 # --- واجهة المستخدم ---
-st.title("📈 محلل العقود والسوينق الاحترافي (v2.5.1)")
+st.title("📈 محلل العقود والسوينق الاحترافي (v2.5.2)")
 st.markdown("منصة شاملة للمضاربة اللحظية (0DTE Scalping) والسوينق، مع الانتقاء الذكي باليونانيات ورصد تأثير الأسهم القيادية على المؤشرات.")
 
 # القائمة الجانبية
